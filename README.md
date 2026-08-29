@@ -50,7 +50,7 @@ Claude Code로 쓰면 명령어를 외울 필요 없이 **"9월 출결 넣어줘
 
 ```powershell
 # 1. 저장소 내려받기
-git clone https://github.com/<사용자>/neis-automation-kit.git
+git clone https://github.com/workcalmkite-hue/neis-automation-kit.git
 cd neis-automation-kit
 
 # 2. 설치 (파이썬·패키지·브라우저를 알아서 깔아줍니다)
