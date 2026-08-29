@@ -1,0 +1,5 @@
+{
+  "_설명": "이 파일을 oauth_client.json 으로 복사한 뒤 본인 값으로 바꾸세요. oauth_client.json 은 .gitignore에 걸려 있어 커밋되지 않습니다. 만드는 법은 docs/02_구글-연동.md 참고.",
+  "client_id": "여기에-구글-클라우드에서-발급받은-클라이언트-ID.apps.googleusercontent.com",
+  "client_secret": "여기에-클라이언트-보안-비밀번호"
+}

@@ -1,0 +1,28 @@
+# ── 절대 커밋하지 않는 것 ─────────────────────────────
+# 구글 OAuth 클라이언트 (본인 것)
+oauth_client.json
+# 구글 토큰·설정 (원래 %LOCALAPPDATA%에 저장되지만 혹시 몰라 한 번 더)
+token*.json
+teacher_config.json
+.env
+
+# 학생 개인정보가 찍힐 수 있는 것
+*.png
+*.jpg
+*.log
+*.csv
+*.xlsx
+*.hwp
+*.hwpx
+*.pdf
+dump_*.html
+verify_result.json
+
+# ── 파이썬 ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.spec
