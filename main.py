@@ -583,6 +583,8 @@ async def main():
 
     # --future: 오늘 이후 날짜도 입력 (예정된 결석을 미리 넣을 때)
     allow_future = "--future" in args
+    # --dry-run: 무엇을 넣을지 목록만 보여주고 나이스는 열지 않는다
+    dry_run = "--dry-run" in args
     date_arg = next((a for a in args if re.match(r"\d{4}-\d{2}-\d{2}", a)), None)
     if date_arg:
         try:
@@ -610,6 +612,11 @@ async def main():
         print(f"  {d.strftime('%m/%d')} — "
               + " / ".join(f"{t['number']}번 {t['name']}({t['label']})" for t in tasks))
     print()
+
+    if dry_run:
+        print("🔍  --dry-run 이라 여기서 멈춥니다. 나이스는 열지 않았습니다.")
+        print("    목록이 맞으면 --dry-run 을 빼고 다시 실행하세요.")
+        return
 
     PROFILE_DIR = str(teacher_config.CONFIG_DIR / "chrome_profile")
 

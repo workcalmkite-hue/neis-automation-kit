@@ -98,6 +98,7 @@ VS Code에서 Claude Code를 켜고 이렇게 말하면 됩니다.
 또는 터미널에서 직접:
 
 ```powershell
+.\.venv\Scripts\python.exe main.py --dry-run   # 무엇을 넣을지 목록만 보기 (나이스 안 엶)
 .\.venv\Scripts\python.exe main.py              # 이번 달 1일 ~ 오늘
 .\.venv\Scripts\python.exe main.py 2026-09-10   # 그 날짜부터 오늘까지
 ```

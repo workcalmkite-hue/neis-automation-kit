@@ -16,6 +16,7 @@ $env:PYTHONUTF8='1'; .\.venv\Scripts\python.exe main.py
 - 인자 없이 → **이번 달 1일부터 오늘까지**
 - 특정 날짜부터 → `main.py 2026-09-10`
 - 미래 날짜도 미리 넣기 → `main.py --future`
+- **처음 쓰는 사용자면 `--dry-run` 을 먼저 권한다** — 목록만 보여주고 나이스를 열지 않는다
 
 가상환경을 안 쓰면 `python main.py`.
 
