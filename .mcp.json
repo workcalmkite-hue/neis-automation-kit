@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "나이스출결": {
+      "command": "./.venv/Scripts/python.exe",
+      "args": ["mcp_server.py"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}
