@@ -6,7 +6,7 @@
 
 사용: python verify_attendance.py 2026-07-01 2026-07-31
 """
-import asyncio, sys, json
+import asyncio, sys, json, re
 from datetime import date, timedelta
 from playwright.async_api import async_playwright
 import main as M
@@ -104,6 +104,108 @@ def marks_of(named):
             if k not in ("번호", "성명") and v}
 
 
+PERIOD_RE = re.compile(r"^(\d+)교시$")
+
+
+def _marked_periods(marks):
+    """나이스 화면에서 '/' 로 표시된 교시 번호 (= 빠진 교시)."""
+    out = []
+    for col, val in marks.items():
+        m = PERIOD_RE.match(col)
+        if m and val == "/":
+            out.append(int(m.group(1)))
+    return sorted(out)
+
+
+def _check_periods(jongryu, note, marks):
+    """교시 범위가 맞는지. 맞으면 None, 틀리면 사유 문자열.
+
+    조퇴 `N교시~` = N교시부터 빠짐  → '/' 가 N교시에서 시작해야 한다
+    지각 `~N교시` = N교시까지 빠짐  → '/' 가 N교시에서 끝나야 한다
+    """
+    got = _marked_periods(marks)
+    if not got:
+        return "빠진 교시 표시(/)가 하나도 없음"
+    if jongryu == "결석":
+        return None                       # 결석은 전 교시가 대상이라 범위를 따로 보지 않는다
+    m = re.search(r"(\d+)\s*교시\s*~", note)
+    if m and jongryu == "조퇴":
+        want = int(m.group(1))
+        if min(got) != want:
+            return f"{want}교시부터여야 하는데 나이스는 {min(got)}교시부터"
+        return None
+    m = re.search(r"~\s*(\d+)\s*교시", note)
+    if m and jongryu == "지각":
+        want = int(m.group(1))
+        if max(got) != want:
+            return f"{want}교시까지여야 하는데 나이스는 {max(got)}교시까지"
+        return None
+    return None                           # 교시 표기가 없으면 범위는 검사하지 않는다
+
+
+def compare_day(expected, actual):
+    """하루치 대조 → [(상태, 메시지)]. 상태: ok / 빠짐 / 분류다름 / 교시다름 / 추가"""
+    rows = []
+    seen = set()
+    for t in expected:
+        num = str(t["number"])
+        want = f"{t['gubun']}{t['jongryu']}"
+        note = (t.get("note") or "").strip()
+        seen.add(num)
+        head = f"{num}번 {t['name']}  {want}" + (f" {note}" if note else "")
+        marks = actual.get(num)
+        if not marks:
+            rows.append(("빠짐", f"{head} → 나이스에 없음"))
+            continue
+        got = marks.get("마감", "")
+        if not got:
+            rows.append(("빠짐", f"{head} → 나이스에 안 들어갔습니다 (그 줄이 비어 있음)"))
+            continue
+        if got != want:
+            rows.append(("분류다름", f"{head} → 나이스에는 '{got}' 입니다"))
+            continue
+        why = _check_periods(t["jongryu"], note, marks)
+        if why:
+            rows.append(("교시다름", f"{head} → {why}"))
+        else:
+            rows.append(("ok", head))
+    for num, marks in actual.items():
+        got = marks.get("마감", "")
+        if got and num not in seen:
+            rows.append(("추가", f"{num}번  나이스에만 '{got}' 있음 (캘린더엔 없음)"))
+    return rows
+
+
+def print_report(report):
+    """대조 결과를 사람이 읽을 수 있는 표로 출력한다."""
+    MARK = {"ok": "  일치  ", "빠짐": "  빠짐  ", "분류다름": " 분류다름 ",
+            "교시다름": " 교시다름 ", "추가": "  추가  "}
+    print("")
+    print("=" * 62)
+    print("  검증 결과 — 캘린더(기대값) vs 나이스(실제값)")
+    print("=" * 62)
+    counts = {}
+    for d, rows in report:
+        print("")
+        print(f"  {d.strftime('%m/%d')} ({'월화수목금토일'[d.weekday()]})")
+        if not rows:
+            print("      (이 날은 대조할 항목이 없습니다)")
+        for st, msg in rows:
+            print(f"    [{MARK[st]}] {msg}")
+            counts[st] = counts.get(st, 0) + 1
+    ok = counts.get("ok", 0)
+    bad = sum(counts.values()) - ok
+    print("")
+    print("-" * 62)
+    if bad == 0:
+        print(f"  전부 일치합니다 — {ok}건 확인. 고칠 것 없습니다.")
+    else:
+        parts = ", ".join(f"{k} {v}건" for k, v in counts.items() if k != "ok")
+        print(f"  확인이 필요합니다 — {bad}건 ({parts}) / 일치 {ok}건")
+        print("  고치는 방법은 설명서 4장 '④ 틀린 곳을 고칩니다' 를 보세요.")
+    print("-" * 62)
+
+
 async def run(start, end):
     M.load_teacher_settings()
     recs = M.load_from_calendar(start, end)
@@ -116,6 +218,7 @@ async def run(start, end):
 
     PROFILE_DIR = str(teacher_config.CONFIG_DIR / "chrome_profile")
     result = {}
+    report = []
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
             user_data_dir=PROFILE_DIR, channel="chrome", headless=False, slow_mo=40,
@@ -151,13 +254,20 @@ async def run(start, end):
                          "gubun": t["gubun"], "jongryu": t["jongryu"], "note": t["note"]}
                         for t in task_map[d]],
                 }
+                rows = compare_day(result[d.isoformat()]["expected"], actual)
+                result[d.isoformat()]["diff"] = rows
+                report.append((d, rows))
                 print(f"  {d.strftime('%m/%d')} 읽음: {len(grid)}행, 표시된 학생 {len(actual)}명, 화면날짜={dateval}")
         finally:
             await ctx.close()
 
+    print_report(report)
+
     with open("verify_result.json", "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=1)
-    print("\nSAVED verify_result.json")
+    print("")
+    print("자세한 내용은 verify_result.json 에 저장했습니다.")
+    print("(이 파일에는 학생 이름이 들어 있습니다 — 남에게 주거나 커밋하지 마세요)")
 
 
 if __name__ == "__main__":
