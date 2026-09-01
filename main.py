@@ -445,9 +445,61 @@ def parse_gyosi_num(note: str, jongryu: str = "") -> int | None:
     return int(nums[-1]) if jongryu == "지각" else int(nums[0])
 
 
-def gyosi_col_index(gyosi_num: int) -> int:
-    """교시 번호 → td 0-based 인덱스
-    번호=0, 성명=1, 마감=2, 조회=3, 1교시=4, ..., 6교시=9, 종례=10"""
+
+GRID_HEADER_JS = r"""
+() => {
+  const NL = String.fromCharCode(10);
+  // 헤더 셀에는 정렬 표시 등이 덧붙는다. 첫 줄의 첫 낱말만 취한다
+  // (컬럼 이름에는 공백이 없다: 번호·성명·마감·조회·N교시·종례·사유)
+  const clean = t => ((t || '').trim().split(NL)[0].trim().split(/\s+/)[0] || '');
+  for (const r of document.querySelectorAll('.cl-grid-row')) {
+    const kids = Array.from(r.children).map(d => d.innerText);
+    if (kids.length && clean(kids[0]) === '번호') return kids.map(clean);
+  }
+  return [];
+}
+"""
+
+
+async def read_day_columns(page: Page) -> list:
+    """그날 그리드의 실제 컬럼 이름 목록.
+
+    ['번호','성명','마감','조회','1교시',...,'종례','사유'] 형태.
+    교시 수가 날마다 다르므로(단축수업·학교급별 차이) 위치를 고정하면 안 된다.
+    읽지 못하면 빈 리스트 — 그때는 예전처럼 고정 위치로 계산한다.
+    """
+    try:
+        cols = await page.evaluate(GRID_HEADER_JS)
+    except Exception:
+        return []
+    if not isinstance(cols, list):
+        return []
+    # 제대로 읽었는지 확인한다. 헤더 모양이 바뀌어 엉뚱하게 읽혔는데 그대로 믿으면
+    # 멀쩡한 학생을 "없는 교시"라며 통째로 건너뛰게 된다 — 그게 더 나쁘다.
+    if "조회" not in cols or not any(c.endswith("교시") for c in cols):
+        print("  ⚠️  그리드 헤더를 읽지 못했습니다 — 교시 위치를 예전 방식으로 계산합니다.")
+        return []
+    return cols
+
+
+def day_last_period(day_cols) -> int:
+    """그날 마지막 교시 번호. 못 읽으면 0."""
+    nums = [int(c[:-2]) for c in (day_cols or []) if c.endswith("교시") and c[:-2].isdigit()]
+    return max(nums) if nums else 0
+
+
+def gyosi_col_index(gyosi_num: int, day_cols=None):
+    """교시 번호 → td 0-based 인덱스. 그날 없는 교시면 None.
+
+    day_cols(그날 실제 헤더)가 있으면 **이름으로** 찾는다 — 이게 정확한 방법이다.
+    헤더 목록의 인덱스가 곧 이 함수가 돌려주는 값이다
+    (번호=0, 성명=1, 마감=2, 조회=3, 1교시=4 ...).
+
+    day_cols가 없으면 예전처럼 6~7교시 시간표를 가정하고 계산한다.
+    """
+    want = "조회" if gyosi_num == 0 else f"{gyosi_num}교시"
+    if day_cols:
+        return day_cols.index(want) if want in day_cols else None
     if gyosi_num == 0:
         return 3  # 조회
     return 3 + gyosi_num  # 1교시→4, 4교시→7
@@ -489,12 +541,25 @@ async def handle_magam_popup(page: Page, gubun: str, jongryu: str):
     await page.wait_for_timeout(400)
 
 
-async def enter_student(page: Page, task: dict):
+async def enter_student(page: Page, task: dict, day_cols=None):
     name    = task["name"]
     number  = task["number"]
     gubun   = task["gubun"]
     jongryu = task["jongryu"]
     note    = task["note"]
+
+    # 없는 교시를 요구하면 아예 손대지 않는다.
+    # 그날 3교시까지인데 '5교시~'를 넣으라고 하면, 예전 코드는 위치를 고정 계산해
+    # '사유' 칸이나 '종례' 칸을 눌러 엉뚱한 값을 만들었다 (오류도 안 났다).
+    if jongryu in ("조퇴", "지각") and day_cols:
+        _g = parse_gyosi_num(note, jongryu)
+        if _g is not None and gyosi_col_index(_g, day_cols) is None:
+            last = day_last_period(day_cols)
+            print(f"  ⛔  {number}번 {name}: 이 날은 {last}교시까지입니다 "
+                  f"— note '{note}' 의 {_g}교시는 없는 교시라 입력하지 않았습니다.")
+            print(f"      캘린더 제목을 그날 시간표에 맞게 고친 뒤 다시 돌려주세요.")
+            return
+
     try:
         # 1단계: 항상 마감(col=2) 셀 클릭 → 구분/종류 팝업 → 적용
         await click_magam_cell(page, name, number, col=2)
@@ -504,7 +569,7 @@ async def enter_student(page: Page, task: dict):
             # 2단계: 교시 셀 클릭 (마감 팝업 적용 후 수정된 행에서 해당 교시 셀 클릭)
             gyosi_num = parse_gyosi_num(note, jongryu)
             if gyosi_num is not None:
-                col = gyosi_col_index(gyosi_num)
+                col = gyosi_col_index(gyosi_num, day_cols)
                 row = page.locator(".cl-grid-row").filter(has_text=name).first
                 nth = col + 2
                 cell = row.locator(f"> div:nth-child({nth})").locator(".cl-text")
@@ -668,8 +733,12 @@ async def main():
                 print(f"\n📅  {d.strftime('%Y년 %m월 %d일')} ({len(tasks)}명)...")
                 await dismiss_alert_popup(page, timeout=1000)
                 await set_date_and_search(page, d)
+                day_cols = await read_day_columns(page)
+                last_p = day_last_period(day_cols)
+                if last_p:
+                    print(f"    이 날 시간표: {last_p}교시까지")
                 for task in tasks:
-                    await enter_student(page, task)
+                    await enter_student(page, task, day_cols)
                 await save_page(page)
 
             print("\n🎉  모든 출결 입력 완료!")
