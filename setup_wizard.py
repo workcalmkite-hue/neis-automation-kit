@@ -148,10 +148,20 @@ def main():
     if holiday_sheet:
         holiday_range = ask("휴업일이 적힌 범위 (예: 출결!K2:K50)", holiday_range)
 
-    creds = run_oauth()
+    print("\n── 6. 학생 출결 자동화 (구글 캘린더) ──")
+    print("   복무(조퇴·외출·출장)만 쓰실 거면 이 단계는 건너뛰셔도 됩니다.")
+    print("   출결까지 쓰시려면 본인 구글 클라우드 프로젝트에서 발급한")
+    print("   oauth_client.json 이 이 폴더에 있어야 합니다.")
+    use_calendar = ask("출결 자동화도 쓰시겠습니까? (y/n)",
+                       "y" if old.get("calendars") else "n", required=False)
 
-    print("\n📅  출결 분류 캘린더 확인/생성 중...")
-    calendars = ensure_calendars(creds)
+    calendars = old.get("calendars", {})
+    if use_calendar.strip().lower().startswith("y"):
+        creds = run_oauth()
+        print("\n📅  출결 분류 캘린더 확인/생성 중...")
+        calendars = ensure_calendars(creds)
+    else:
+        print("   건너뜁니다. 나중에 출결도 쓰시려면 이 설정을 다시 돌리면 됩니다.")
 
     if cert_password:
         keyring.set_password(teacher_config.KEYRING_SERVICE, cert_name, cert_password)
