@@ -496,7 +496,9 @@ async def set_date_and_search(page: Page, d: date) -> bool:
     # 화면의 날짜 칸을 «읽어서» 그날이 맞는지 본다. 엉뚱한 날짜 화면에 출결을
     # 적는 것이 제일 나쁘다. 날짜 칸 자체를 못 찾으면 예전처럼 그냥 진행한다
     # (여기서 막으면 되던 것까지 멈춘다).
-    shown = None
+    # 날짜 칸이 화면에 여러 개일 수 있다(조회 기간 등). 그래서 «하나라도 그날이면»
+    # 통과로 본다. 「맨 앞 칸이 다르다」로 막으면 되던 날까지 통째로 건너뛴다.
+    seen_dates = []
     _inputs = page.locator("input:visible")
     for _i in range(await _inputs.count()):
         try:
@@ -504,12 +506,11 @@ async def set_date_and_search(page: Page, d: date) -> bool:
         except Exception:
             continue
         if re.match(r"^\d{4}\.\d{2}\.\d{2}\.?$", _v):
-            shown = _v if _v.endswith(".") else _v + "."
-            break
-    if shown is None:
+            seen_dates.append(_v if _v.endswith(".") else _v + ".")
+    if not seen_dates:
         print("  ⚠️  화면에서 날짜 칸을 못 찾아 확인하지 못했습니다 (그대로 진행)")
-    elif shown != date_str:
-        print(f"  ⛔  날짜가 안 바뀌었습니다 — 화면은 {shown}, 넣으려던 날은 {date_str}")
+    elif date_str not in seen_dates:
+        print(f"  ⛔  날짜가 안 바뀌었습니다 — 화면: {', '.join(seen_dates)} / 넣으려던 날: {date_str}")
         return False
 
     # 날짜를 바꾸면 나이스가 "학적변동 시간표 확인하세요" 같은 알림 팝업을 바로 띄우는
@@ -630,30 +631,17 @@ async def pick_student_row(page: Page, name: str, number: str):
     n = await rows.count()
     if n == 0:
         raise RuntimeError("'" + name + "' 이름이 있는 행을 찾지 못했습니다")
-
-    num = str(number).strip()
-    matched = []
-    for i in range(n):
-        r = rows.nth(i)
-        try:
-            txt = " ".join((await r.inner_text(timeout=2000)).split())
-        except Exception:
-            continue
-        if re.search(r"(?<!\d)" + re.escape(num) + r"(?!\d)", txt):
-            matched.append(r)
-
-    if len(matched) == 1:
-        return matched[0]
-    if len(matched) > 1:
-        raise RuntimeError(
-            f"번호 {num}·이름 '{name}' 에 맞는 행이 {len(matched)}개입니다 — "
-            f"엉뚱한 학생에게 넣지 않으려고 멈췄습니다. 나이스에서 직접 넣어 주세요")
     if n == 1:
-        # 번호를 행 글자에서 못 읽었지만 이름이 유일하다 — 예전과 같게 그 행을 쓴다.
         return rows.first
+
+    # 후보가 둘 이상이면 «고르지 않는다».
+    # 행 글자에서 번호를 찾아 맞히는 방법도 생각했지만, 행에는 교시·날짜 같은
+    # 다른 숫자도 같이 들어 있어서 «14번» 을 찾다가 «14교시» 에 걸릴 수 있다.
+    # 잘못 넣는 것보다 안 넣고 알리는 편이 낫다 — 동명이인은 드물고, 그때 생기는
+    # 실수는 되돌리기가 제일 어렵다 (2026-09-11).
     raise RuntimeError(
-        f"'{name}' 이름이 붙은 행이 {n}개인데 번호 {num} 와 맞는 행을 못 찾았습니다 — "
-        f"엉뚱한 학생에게 넣지 않으려고 멈췄습니다. 나이스에서 직접 넣어 주세요")
+        f"'{name}' 이름이 붙은 행이 {n}개입니다 (동명이인으로 보입니다) — "
+        f"{number}번 학생을 확실히 고를 수 없어 넣지 않았습니다. 나이스에서 직접 넣어 주세요")
 
 
 async def click_magam_cell(page: Page, name: str, number: str, col: int = 2):
@@ -730,11 +718,13 @@ async def enter_student(page: Page, task: dict, day_cols=None) -> tuple[str, str
             return (FAILED, f"이 날은 {last}교시까지인데 note '{note}' 는 {_g}교시를 가리킴")
 
     partial_reason = None
+    applied = False   # 구분·종류가 «들어간» 뒤부터 True — 여기서 터지면 ❌ 가 아니라 ⚠️ 다
 
     try:
         # 1단계: 항상 마감(col=2) 셀 클릭 → 구분/종류 팝업 → 적용
         await click_magam_cell(page, name, number, col=2)
         await handle_magam_popup(page, gubun, jongryu)
+        applied = True   # 여기까지 왔으면 구분·종류는 화면에 들어갔다
 
         if jongryu in ("조퇴", "지각"):
             # 2단계: 교시 셀 클릭 (마감 팝업 적용 후 수정된 행에서 해당 교시 셀 클릭)
@@ -765,6 +755,10 @@ async def enter_student(page: Page, task: dict, day_cols=None) -> tuple[str, str
         else:
             print(f"  ✅  {number}번 {name}: {gubun}/{jongryu}")
     except Exception as e:
+        if applied:
+            # 구분·종류까지는 들어갔다. «한 칸도 안 들어갔다» 고 말하면 그게 거짓말이다.
+            print(f"  ⚠️  {number}번 {name}: 구분·종류는 넣었는데 그 뒤에서 실패 — {e}")
+            return (PARTIAL, f"구분·종류는 넣었으나 그 뒤에서 실패 — {type(e).__name__}: {e}")
         print(f"  ❌  {number}번 {name} 실패: {e}")
         return (FAILED, f"{type(e).__name__}: {e}")
 
@@ -1031,8 +1025,10 @@ async def main():
                     already = {(f["number"], f["name"]) for f in failures if f["date"] == d}
                     print(f"  ❓  {d.strftime('%m/%d')} 저장 확인 실패 — {save_reason}")
                     for task in tasks:
-                        if (task["number"], task["name"]) in already:
+                        key = (task["number"], task["name"])
+                        if key in already:
                             continue
+                        already.add(key)   # 같은 학생이 그날 두 건이면 한 번만 올린다
                         failures.append({
                             "date":   d,
                             "kind":   UNSURE,
