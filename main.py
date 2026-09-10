@@ -716,7 +716,9 @@ async def main():
     except teacher_config.ConfigMissingError as e:
         print(f"\n❌  {e}")
         sys.exit(1)
-    print(f"👤  {GRADE}학년 {CLASS}반 담임 ({CERT_NAME})")
+    # 학년·반은 선택값이다 — 담임이 아니면 비어 둔다.
+    who = f"{GRADE}학년 {CLASS}반 담임 " if GRADE and CLASS else ""
+    print(f"👤  {who}({CERT_NAME})")
 
     # --future: 오늘 이후 날짜도 입력 (예정된 결석을 미리 넣을 때)
     allow_future = "--future" in args

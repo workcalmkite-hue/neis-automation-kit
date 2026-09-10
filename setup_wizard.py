@@ -122,9 +122,11 @@ def main():
     print("   서울이면 기본값 그대로 Enter.")
     neis_url = ask("나이스 주소", old.get("neis_url", teacher_config.DEFAULTS["neis_url"]))
 
-    print("\n── 2. 담임 학급 ──")
-    grade  = ask("학년 (예: 1)", old.get("grade", ""))
-    class_ = ask("반 (예: 7)", old.get("class", ""))
+    print("\n── 2. 담임 학급 (담임이 아니면 그냥 Enter) ──")
+    print("   학생 출결 자동화에만 쓰는 값입니다.")
+    print("   부장·교과 전담 등 담임이 아니시면 두 항목 모두 비워 두세요.")
+    grade  = ask("학년 (예: 1)", old.get("grade", ""), required=False)
+    class_ = ask("반 (예: 7)", old.get("class", ""), required=False)
 
     print("\n── 3. 공동인증서 ──")
     print("   나이스 '인증서 로그인' 창에 뜨는 이름을 그대로 적으세요.")
