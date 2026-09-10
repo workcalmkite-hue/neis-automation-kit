@@ -842,6 +842,7 @@ async def save_page(page: Page) -> tuple[str, str]:
     #    판정 근거는 창이 뜬 사실이 아니라 창의 «본문 글자» 다 (2026-09-11).
     told = False
     body = ""
+    seen = ""
     try:
         await page.wait_for_selector("text=알림", timeout=6000)
         try:
@@ -849,6 +850,13 @@ async def save_page(page: Page) -> tuple[str, str]:
                 (await page.locator('[role="dialog"]:visible').last.inner_text(timeout=2000)).split())
         except Exception:
             body = ""
+        # 창이 «떠 있는 동안» 화면 글자도 같이 뜬다. 알림이 role=dialog 로 안 잡히는
+        # 경우가 있어서 두 곳을 다 본다.
+        try:
+            page_text = " ".join((await page.evaluate("document.body.innerText")).split())
+        except Exception:
+            page_text = ""
+        seen = body + " " + page_text
         told = await click_confirm(page, timeout=3000)
     except Exception:
         pass
@@ -864,15 +872,26 @@ async def save_page(page: Page) -> tuple[str, str]:
     BAD_WORDS = ("없습니다", "실패", "오류", "않았", "불가",
                  "취소되", "하시겠습니까", "중입니다")
 
-    if not told:
-        return (SAVE_UNSURE, "저장 결과창을 못 봤습니다 — 저장됐는지 확인할 수 없습니다")
-    if "변경된 내용이 없습니다" in body:
+    # ★ 나이스가 저장에 성공하면 「저장되었습니다」라고 답한다.
+    #   2026-09-02·09-03 에 나이스에 직접 붙여 작업하며 쓴 fs_run.py / fs_fix4.py 가
+    #   바로 이 문구로 성공을 판정했다 (그 스크립트로 실제 저장이 됐다).
+    #   그래서 이 문구를 «맞는 답» 으로 삼는다.
+    SUCCESS_TEXT = "저장되었습니다"
+
+    if SUCCESS_TEXT in seen:
+        print("  💾  저장 완료!")
+        return (SAVE_OK, "")
+    if "변경된 내용이 없습니다" in seen:
         print("  ⚠️  나이스: 「변경된 내용이 없습니다」")
         return (SAVE_UNSURE,
                 "나이스가 「변경된 내용이 없습니다」라고 답했습니다 — "
                 "이미 같은 내용이 들어 있거나, 입력이 반영되지 않았습니다")
+    if not told:
+        return (SAVE_UNSURE, "저장 결과창을 못 봤습니다 — 저장됐는지 확인할 수 없습니다")
     if "저장" in body and not any(w in body for w in BAD_WORDS):
-        print("  💾  저장 완료!")
+        # 「저장되었습니다」는 아닌데 저장쪽 말이긴 하다. 성공으로 보되 문구를 남긴다 —
+        # 나이스가 문구를 바꿨다면 여기 찍힌 글자로 SUCCESS_TEXT 를 고치면 된다.
+        print(f"  💾  저장된 것으로 봅니다 (결과창 문구가 예상과 다름: {body[:60]})")
         return (SAVE_OK, "")
     if not body:
         # 창은 떴는데 글자를 못 읽었다. 성공이라고 말할 근거가 없다.
