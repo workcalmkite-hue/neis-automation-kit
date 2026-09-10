@@ -282,11 +282,15 @@ async def wait_for_attendance_page(page: Page):
     print("📌  출결관리로 이동 중...")
 
     # 학급담임 → 출결관리(2단계 카테고리) → 출결관리(3단계=일일출결관리)
-    # 로그인 직후 공지 팝업이 메뉴를 가리거나, 메뉴가 이미 열려 있어 토글로 닫히는
+    # 로그인 직후 팝업이 메뉴를 가리거나, 메뉴가 이미 열려 있어 토글로 닫히는
     # 경우가 있어 팝업 닫기 + 재시도로 감싼다.
+    # 팝업은 두 종류이고 닫는 버튼이 서로 다르다 — 둘 다 시도해야 한다.
+    #   알림('확인')  ← dismiss_alert_popup
+    #   공지('닫기')  ← dismiss_notice_popup   (이걸 안 해서 메뉴가 막혔었다)
     last_error = None
     for attempt in range(1, 4):
         await dismiss_alert_popup(page, timeout=1500)
+        await dismiss_notice_popup(page, timeout=1500)
         try:
             sub2 = page.get_by_role("link", name="출결관리 2단계").first
             if not await sub2.is_visible():
@@ -333,6 +337,92 @@ async def dismiss_alert_popup(page: Page, timeout=3000) -> bool:
         print("  ℹ️  알림 팝업 닫기")
         await page.wait_for_timeout(400)
     return ok
+
+
+# ────────────────────────────────────────────────────────────────
+# 공지 팝업 — 「알림」 팝업과 다른 물건이다
+#
+#   알림 팝업 : 본문에 '알림' 글자        → '확인' 버튼   (dismiss_alert_popup)
+#   공지 팝업 : '공지사항/전달사항내용조회' → '닫기' 버튼   (여기)
+#
+# 예전에는 dismiss_alert_popup() 하나가 둘 다 닫는 줄 알았다. 실제로는
+# `text=알림` 을 못 찾고 1.5초 뒤 그냥 흘러가서 공지 팝업이 그대로 남았고,
+# 그 팝업이 메뉴 클릭을 가로채 '메뉴 이동 실패'가 났다 (2026-09-11 실측).
+#
+# 아래 선택자는 추측이 아니라 로그인 직후 화면의 DOM 을 그대로 뜬 것이다:
+#   <div class="cl-aside">  … 공지사항 / 전달사항내용조회 …
+#     <div class="cl-dialog-close" role="button" aria-label="닫기"></div>
+#     <div class="cl-checkbox-icon" role="checkbox" aria-checked="false"
+#          aria-label="오늘 하루 창 열지 않음"></div>
+#     <div class="cl-checkbox-icon" role="checkbox" aria-checked="false"
+#          aria-label="일주일 창 열지 않음"></div>
+#     <div role="button" class="btn-outline-secondary cl-control cl-button">닫기</div>
+#   </div>
+#
+# 주의 ① data-ndid 는 실행할 때마다 바뀐다(n1·n2 …). 선택자로 쓰지 않는다.
+# 주의 ② .cl-aside 자체는 높이가 0이라 playwright 기준 '보이지 않는' 요소다.
+#        컨테이너에 is_visible() 을 걸면 안 되고, 안쪽 컨트롤로 판정해야 한다.
+NOTICE_MARK       = "전달사항내용조회"   # 공지 팝업을 알아보는 글자
+NOTICE_SKIP_LABEL = "일주일 창 열지 않음"  # 자동화 전용 프로필이라 여기서 공지를 볼 일이 없다
+_NOTICE_STILL_OPEN = f'[role="checkbox"][aria-label="{NOTICE_SKIP_LABEL}"]:visible'
+
+
+async def dismiss_notice_popup(page: Page, timeout: int = 3000, rounds: int = 3) -> bool:
+    """로그인 직후 뜨는 공지 팝업을 닫는다. 닫았으면 True.
+
+    「일주일 창 열지 않음」을 먼저 체크하고 닫으므로, 이 크롬 프로필에서는
+    한 주 동안 다시 뜨지 않는다. 공지는 평소 쓰는 브라우저에서 따로 본다.
+    """
+    closed_any = False
+    for i in range(rounds):
+        popup = page.locator(".cl-aside").filter(has_text=NOTICE_MARK).last
+        try:
+            await popup.wait_for(state="attached", timeout=timeout if i == 0 else 800)
+        except Exception:
+            break
+
+        # ① 「일주일 창 열지 않음」 체크
+        box = popup.locator(f'[role="checkbox"][aria-label="{NOTICE_SKIP_LABEL}"]')
+        try:
+            if await box.count() > 0:
+                if await box.first.get_attribute("aria-checked") != "true":
+                    await box.first.click(timeout=3000)
+                    await page.wait_for_timeout(300)
+                state = await box.first.get_attribute("aria-checked")
+                print(f"  ℹ️  공지 팝업: 「{NOTICE_SKIP_LABEL}」 체크 (aria-checked={state})")
+                if state != "true":
+                    print("  ⚠️  공지 팝업: 체크가 안 먹었습니다 — 다음 실행에 또 뜰 수 있습니다.")
+            else:
+                print(f"  ⚠️  공지 팝업: 「{NOTICE_SKIP_LABEL}」 체크박스가 없습니다 (그냥 닫습니다).")
+        except Exception as e:
+            print(f"  ⚠️  공지 팝업: 체크박스를 누르지 못했습니다 — {str(e)[:70]}")
+
+        # ② 닫기 — '확인'이 아니라 '닫기'. 본문 버튼이 안 되면 머리말의 X 아이콘.
+        for what, loc in (
+            ("닫기 버튼", popup.locator('[role="button"]:visible').filter(has_text=re.compile(r"^닫기$"))),
+            ("X 아이콘",  popup.locator(".cl-dialog-close:visible")),
+        ):
+            try:
+                if await loc.count() == 0:
+                    continue
+                await loc.last.click(timeout=3000)
+                await page.wait_for_timeout(500)
+                if await page.locator(_NOTICE_STILL_OPEN).count() == 0:
+                    print(f"  ℹ️  공지 팝업 닫기 ({what})")
+                    closed_any = True
+                    break
+            except Exception:
+                continue
+        else:
+            print("  ⚠️  공지 팝업을 닫지 못했습니다 — 메뉴 클릭이 막힐 수 있습니다.")
+            break
+
+        if await page.locator(_NOTICE_STILL_OPEN).count() > 0:
+            print("  ⚠️  공지 팝업이 아직 떠 있습니다 — 다시 시도합니다.")
+            continue
+        break
+
+    return closed_any
 
 
 async def set_date_and_search(page: Page, d: date) -> bool:
