@@ -90,10 +90,16 @@ description: 본인 조퇴·외출·지각(병조퇴 등)을 나이스 개인근
 1. 설정의 `neis_url` 로 접속
 2. `인증서 로그인` 버튼 클릭 → 인증서 목록에서 `cert_name` 이 포함된 항목 클릭
 3. `인증서 암호 입력필드` 에 암호 입력 후 Enter
-4. **암호는 절대 대화에 평문으로 적지 않는다.** keyring에서 꺼내 툴 파라미터로만 쓴다:
+4. **암호는 절대 화면에 찍지 않는다.** 암호는 스크립트가 keyring 에서 «직접» 읽는다.
+   사람도 LLM 도 그 값을 볼 일이 없다 — 꺼내서 넘기지 마라.
+
+   ⚠️ 예전에 이 자리에 `print('CERT_PASSWORD='+keyring.get_password(...))` 가 적혀 있었다.
+   그걸 실행하면 암호가 터미널과 대화 기록에 그대로 남는다. **쓰지 마라** (2026-09-11 삭제).
+
+   확인이 필요하면 «있다/없다» 만 본다:
 
 ```powershell
-$env:PYTHONUTF8='1'; .\.venv\Scripts\python.exe -c "import teacher_config, keyring; cfg=teacher_config.load_config(); print('CERT_NAME='+cfg['cert_name']); print('CERT_PASSWORD='+keyring.get_password(teacher_config.KEYRING_SERVICE, cfg['cert_name']))"
+$env:PYTHONUTF8='1'; .\.venv\Scripts\python.exe -c "import teacher_config, keyring; cfg=teacher_config.load_config(); print('인증서 이름:', cfg['cert_name']); print('암호 저장됨' if keyring.get_password(teacher_config.KEYRING_SERVICE, cfg['cert_name']) else '암호 없음 — setup_wizard.py 로 다시 넣으세요')"
 ```
 
 ---

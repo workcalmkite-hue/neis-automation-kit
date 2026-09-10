@@ -274,6 +274,11 @@ async def wait_for_attendance_page(page: Page):
     await page.wait_for_selector("text=학급담임", timeout=120_000)
     print("✅  로그인 완료!")
 
+    # 팝업은 «이미 열려 있는 경우» 에도 걸리적거린다. 조회·저장 클릭까지 가로채므로
+    # 아래 «이미 열려있음» 판정보다 먼저 치운다 (2026-09-11).
+    await dismiss_alert_popup(page, timeout=1000)
+    await dismiss_notice_popup(page, timeout=1500)
+
     # 이미 출결관리 페이지에 있으면 바로 진행 (다른 탭에 숨어있는 버튼은 무시하고 실제로 보이는 것만 확인)
     if await page.locator(".cl-dateinput-button:visible").count() > 0:
         print("✅  출결관리 페이지 이미 열려있음!\n")
@@ -634,6 +639,11 @@ async def handle_magam_popup(page: Page, gubun: str, jongryu: str):
 # 학생 한 명의 결과 갈래
 FAILED  = "failed"   # ❌ 아예 안 들어감 — 나이스에서 직접 넣어야 한다
 PARTIAL = "partial"  # ⚠️ 들어갔지만 교시 칸이 빔 — 교시만 채우면 된다
+UNSURE  = "unsure"   # ❓ 들어갔는지 «확인할 수 없다» — 나이스에서 눈으로 봐야 한다
+
+# 저장 결과 (save_page 가 돌려준다)
+SAVE_OK     = "saved"    # 나이스가 결과창으로 답한 것을 확인했다
+SAVE_UNSURE = "unsure"   # 그렇게 답하지 않았다 — 안 들어갔을 수도 있다
 
 
 async def enter_student(page: Page, task: dict, day_cols=None) -> tuple[str, str] | None:
@@ -715,6 +725,7 @@ def report_failures(problems: list[dict]) -> int:
 
     failed  = [p for p in problems if p["kind"] == FAILED]
     partial = [p for p in problems if p["kind"] == PARTIAL]
+    unsure  = [p for p in problems if p["kind"] == UNSURE]
 
     def block(items, mark, title, tail):
         print("\n" + "!" * 60)
@@ -733,17 +744,26 @@ def report_failures(problems: list[dict]) -> int:
     if partial:
         block(partial, "⚠️", "들어갔지만 교시 없음 (교시만 채우면 됨)",
               "구분·종류는 저장됐습니다. 나이스에서 교시 칸만 채워 주세요.")
+    if unsure:
+        block(unsure, "❓", "들어갔는지 확인하지 못함 (나이스에서 눈으로 확인)",
+              "나이스가 「저장했습니다」라고 답하지 않았습니다. "
+              "이미 같은 내용이 있어서일 수도, 입력이 안 된 것일 수도 있습니다.")
 
-    print(f"\n   정리: ❌ 안 들어감 {len(failed)}명 / ⚠️ 교시 없음 {len(partial)}명")
+    print(f"\n   정리: ❌ 안 들어감 {len(failed)}명 / ⚠️ 교시 없음 {len(partial)}명"
+          f" / ❓ 확인 필요 {len(unsure)}명")
     return 1
 
 
-async def save_page(page: Page) -> tuple[bool, str]:
-    """그날 입력분을 저장한다. 돌려주는 값: (저장됐나, 이유).
+async def save_page(page: Page) -> tuple[str, str]:
+    """그날 입력분을 저장한다. 돌려주는 값: (결과, 이유).
+
+    (SAVE_OK,     "")    나이스가 «결과창» 으로 답한 것을 확인했다
+    (SAVE_UNSURE, 이유)  그렇게 답하지 않았다 — 사람이 나이스를 봐야 한다
 
     ⚠️ 예전에는 확인 팝업 두 개를 각각 `except: pass` 로 삼키고 아무것도 돌려주지
-       않았다. 그래서 «저장이 안 됐는데 마지막에 🎉 가 뜨고 종료코드 0» 이 될 수
-       있었다 — 그날 학생 전원이 통째로 빠지는 건데도 알 길이 없었다.
+       않았다. 그래서 «저장이 안 됐는데 🎉 가 뜨고 종료코드 0» 이 될 수 있었다.
+    ⚠️ 그 뒤에도 «저장하시겠습니까?» 를 «누른 것» 만으로 성공으로 셌다. 누른 것과
+       저장된 것은 다르다 — 결과창을 못 봤으면 모르는 것이다 (2026-09-11 수정).
     """
     # 직전 단계에서 알림 팝업·사이드바 오버레이가 남아 있으면 저장 클릭을 막으므로 먼저 정리
     await dismiss_alert_popup(page, timeout=1000)
@@ -784,11 +804,16 @@ async def save_page(page: Page) -> tuple[bool, str]:
     await page.wait_for_timeout(600)
 
     if no_change:
-        # 방금 학생을 넣었는데 «변경 없음» 이면 입력이 반영되지 않은 것이다.
-        return (False, "나이스가 「변경된 내용이 없습니다」라고 답했습니다 — 입력이 반영되지 않았습니다")
-    if not (asked or told):
-        return (False, "저장 확인창이 뜨지 않았습니다 — 저장됐는지 확인할 수 없습니다")
-    return (True, "")
+        # 이미 같은 내용이 들어 있어도, 입력이 반영되지 않아도 이 창이 뜬다.
+        # 둘을 구분할 방법이 없으므로 «모른다» 로 둔다.
+        return (SAVE_UNSURE,
+                "나이스가 「변경된 내용이 없습니다」라고 답했습니다 — "
+                "이미 같은 내용이 들어 있거나, 입력이 반영되지 않았습니다")
+    if not told:
+        # asked(저장하시겠습니까 → 확인) 만으로는 저장을 «눌렀다» 는 것뿐이다.
+        return (SAVE_UNSURE,
+                "저장 결과창(「저장했습니다」)을 못 봤습니다 — 저장됐는지 확인할 수 없습니다")
+    return (SAVE_OK, "")
 
 
 # ============================================================
@@ -917,21 +942,21 @@ async def main():
                         })
                 # 실패자가 있어도 저장은 그대로 한다 —
                 # 여기서 막으면 이미 들어간 학생들까지 같이 날아간다.
-                saved, save_reason = await save_page(page)
-                if not saved:
-                    # 저장이 안 됐으면 그날 «전원» 이 안 들어간 것이다.
+                save_status, save_reason = await save_page(page)
+                if save_status != SAVE_OK:
+                    # 저장을 확인하지 못했으면 그날 «전원» 이 불확실하다.
                     # 이미 개별 사유로 잡힌 학생은 빼고 나머지를 통째로 올린다.
                     already = {f["name"] for f in failures if f["date"] == d}
-                    print(f"  ❌  {d.strftime('%m/%d')} 저장 실패 — {save_reason}")
+                    print(f"  ❓  {d.strftime('%m/%d')} 저장 확인 실패 — {save_reason}")
                     for task in tasks:
                         if task["name"] in already:
                             continue
                         failures.append({
                             "date":   d,
-                            "kind":   FAILED,
+                            "kind":   UNSURE,
                             "number": task["number"],
                             "name":   task["name"],
-                            "reason": f"저장 실패 — {save_reason}",
+                            "reason": save_reason,
                         })
 
             exit_code = report_failures(failures)

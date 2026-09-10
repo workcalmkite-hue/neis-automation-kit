@@ -262,6 +262,7 @@ async def submit(page: Page, dialog, approval_line: str, dump_popup: bool = Fals
     await submit_btn.first.click(timeout=5000)
     await page.wait_for_timeout(800)
     await neis.dismiss_alert_popup(page, timeout=2000)
+    await neis.dismiss_notice_popup(page, timeout=1000)
     await page.wait_for_timeout(400)
 
     doc_dialog = page.locator('[role="dialog"][aria-label="기안문서상신"]')
@@ -411,6 +412,10 @@ async def run(args):
             await page.wait_for_selector("text=학급담임", timeout=120_000)
             await page.wait_for_timeout(1000)
             print("✅  로그인 완료")
+
+            # 로그인 직후 공지 팝업이 뜨면 그 뒤 클릭을 통째로 가로챈다.
+            # 출결 쪽에서 「메뉴 이동 실패」로 겪은 것과 같은 물건이다 (2026-09-11).
+            await neis.dismiss_notice_popup(page, timeout=2000)
 
             dialog = await open_gwn_apply_modal(page)
             print("✅  근무상황신청 모달 진입")
