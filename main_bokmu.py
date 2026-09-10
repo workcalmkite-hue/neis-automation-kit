@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import re
 import sys
+import time
 from datetime import date, datetime
 
 from playwright.async_api import async_playwright, Page
@@ -140,12 +141,122 @@ async def fill_work_sittn_form(
     await fill_text_input(page, reason_input, reason)
 
 
-async def submit(page: Page, dialog, approval_line: str):
+# '상신' 뒤에 떠도 되는 팝업. 이 문구가 없는 팝업은 누르지 않는다.
+# ── 상신 뒤 뜨는 확인창 (2026-09-10 윈도우 · sen.neis.go.kr 에서 실측) ──────────
+# [상신] 을 누르면 메시지 상자가 정확히 2개, 순서대로 뜬다. 둘 다 380x216 이고
+# class 에 modal-msg 가 붙는다. 구분은 aria-label 로 한다 (role·class 는 둘이 같다).
+#
+#   ① aria-label="알림"   "최종 결재자 이외의 결재자는 / 검토로 변경합니다"   버튼: 확인
+#   ② aria-label="확인"   "상신하겠습니까?"                                버튼: 확인, 취소
+#      └ 이 ②의 [확인] 을 눌러야 진짜 상신이다. 그 전까지는 취소하면 안 올라간다.
+#
+# 같은 순간 화면에는 근무상황신청(910px)·기안문서상신(1210px) 다이얼로그도 함께 떠 있다.
+# 하지만 둘 다 modal-msg 가 아니고 '확인' 버튼도 없어서 아래 선택자에 걸리지 않는다.
+#
+# ⚠️  innerText 에는 제목과 버튼 라벨이 같이 딸려온다.
+#     ②의 실제 값은 "확인\n상신하겠습니까?\n확인\n취소" 다. 그래서 완전일치가 아니라
+#     부분일치로 본다.
+MSG_BOX = '[role="dialog"].modal-msg'
+
+# 정규화한 «전체 본문»으로 맞춘다. 부분일치로 두면 안 된다 —
+# "중복 신청입니다. 그래도 상신하겠습니까?" 같은 경고가 그대로 통과한다.
+# (2026-09-10 코덱스 검토 지적. 부분일치였던 초안은 이 경우를 못 막았다)
+SUBMIT_POPUP_STEPS = (
+    ("알림", "알림 최종 결재자 이외의 결재자는 검토로 변경합니다 확인"),
+    ("확인", "확인 상신하겠습니까? 확인 취소"),
+)
+
+EXPECTED_DESC = " → ".join(f"[{a}] {x}" for a, x in SUBMIT_POPUP_STEPS)
+
+
+def norm_text(s: str) -> str:
+    """줄바꿈·연속공백·﻿NBSP 를 한 칸으로 눌러 비교용 문자열을 만든다."""
+    return re.sub(r"\s+", " ", (s or "").replace("\u00a0", " ")).strip()
+
+
+def match_popup_step(aria: str, text: str):
+    """이 상자가 몇 번째 단계인가. 어느 것도 아니면 None."""
+    want = norm_text(text)
+    for i, (a, x) in enumerate(SUBMIT_POPUP_STEPS):
+        if aria == a and want == x:
+            return i
+    return None
+
+
+def dump_popup_html(tag: str, popups) -> list:
+    """팝업의 outerHTML 을 파일로 남긴다. 나중에 구조가 바뀌면 이 파일로 진단한다."""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    paths = []
+    for i, (_, aria, text, html) in enumerate(popups, 1):
+        path = f"bokmu_popup_{tag}_{stamp}_{i}_{aria or '무제'}.html"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("<!-- 팝업에 보이던 글자 -->\n<!--\n")
+            f.write(text.strip().replace("-->", "-- >"))
+            f.write("\n-->\n")
+            f.write(html)
+        paths.append(path)
+    return paths
+
+
+async def pause_for_manual(message: str, detail: str = ""):
+    """자동 처리를 멈추고 사람에게 넘긴다. 브라우저는 열린 채로 둔다.
+
+    예외를 던지지 않는 이유: 추정이 틀렸을 때 원래 되던 상신까지 막아 버리는 것이
+    잘못 눌리는 것 다음으로 나쁘다. 화면은 이미 떠 있으니 사람이 보고 누르면 된다.
+    """
+    print("\n" + "=" * 60)
+    print(f"⛔  {message}")
+    if detail:
+        print(detail)
+    print("    브라우저는 열어 둡니다. 화면에서 직접 처리하신 뒤 Enter를 누르세요.")
+    print("=" * 60)
+    try:
+        await asyncio.to_thread(input, "  Enter... ")
+    except EOFError:
+        pass
+
+
+async def visible_confirm_popups(page: Page, timeout: int = 5000):
+    """지금 떠 있는 «메시지 상자»를 (확인버튼, aria-label, 글자, outerHTML) 로 모아 온다.
+
+    2026-09-10 실측대로 role="dialog" + class 에 modal-msg 가 붙은 상자만 본다.
+    예전에는 '확인' 버튼에서 조상을 거슬러 올라가 상자를 «추정»했는데,
+    실제 DOM 을 받아 보니 상자 자체가 role="dialog" 라 그럴 필요가 없었다.
+    """
+    deadline = time.monotonic() + timeout / 1000
+    while True:
+        found = []
+        boxes = page.locator(MSG_BOX)
+        for i in range(await boxes.count()):
+            box = boxes.nth(i)
+            if not await box.is_visible():
+                continue
+            aria = (await box.get_attribute("aria-label")) or ""
+            text = (await box.inner_text()) or ""
+            html = await box.evaluate("el => el.outerHTML")
+            # 실측 구조 (2026-09-10):
+            #   <div role="button" class="btn-secondary cl-control cl-button">        ← 확인
+            #   <div role="button" class="btn-outline-secondary cl-control cl-button"> ← 취소
+            # 버튼에는 aria-label 이 없다. 글자 '확인' 은 안쪽 .cl-text 에 들어 있다.
+            # 그래서 aria-label 로 찾으면 0개가 나온다 — 상자 안 role=button 을
+            # 글자로 거른다. a/button 까지 넓히지는 않는다 (숨은 복제 버튼 방지).
+            ok_btn = box.locator('[role="button"]').filter(
+                has_text=re.compile(r"^\s*확인\s*$"))
+            found.append((ok_btn, aria, text, html))
+        if found or time.monotonic() >= deadline:
+            return found
+        await page.wait_for_timeout(300)
+
+
+async def submit(page: Page, dialog, approval_line: str, dump_popup: bool = False) -> bool:
     """승인요청 → 기안문서상신 화면 → 개인결재선 지정 → 상신까지 완료한다.
 
     NEIS 근무상황신청은 '승인요청'을 눌러도 결재선을 지정하지 않으면 그냥 저장만 되고
     실제 결재라인으로 올라가지 않는다. 반드시 개인결재선(사전 등록된 프리셋) → 지정 →
     상신 순서를 거쳐야 진짜 상신이 완료된다.
+
+    돌려주는 값: 자동으로 '상신하겠습니까?'까지 눌러 끝냈으면 True,
+    사람에게 넘겼으면 False (그때도 예외는 던지지 않는다).
     """
     submit_btn = dialog.get_by_text("승인요청", exact=True)
     await submit_btn.first.click(timeout=5000)
@@ -182,17 +293,72 @@ async def submit(page: Page, dialog, approval_line: str):
     # '상신' 클릭 후 확인 팝업이 최소 2개 연달아 뜬다:
     #   1) 알림 "최종 결재자 이외의 결재자는 검토로 변경합니다" → 확인
     #   2) 확인 "상신하겠습니까?" → 확인 (여기까지 눌러야 진짜 상신 완료)
+    #
+    # ⚠️  팝업 글자를 읽지 않고 보이는 '확인'을 누르면 중복 신청·기간 오류 같은
+    #     예상 밖 경고창까지 그대로 승인된다. 위 두 문구가 든 팝업만 누르고,
+    #     그 밖의 팝업은 화면을 남긴 뒤 에러로 멈춘다.
+    # 순서를 강제한다: ① 알림 → ② 상신하겠습니까.
+    # 뒤로 돌아가거나 같은 단계를 두 번 누르지 않는다.
+    # ①은 결재선 구성에 따라 안 뜰 수도 있어 건너뛰기는 허용하되,
+    # ②를 누르기 전에 «정확히 그 문구»인지 전체 본문으로 확인한다.
+    submitted = False
+    step_ptr = 0
     for _ in range(4):
+        popups = await visible_confirm_popups(page, timeout=5000)
+        if not popups:
+            break
+
+        if dump_popup:
+            for path in dump_popup_html("ok", popups):
+                print(f"  📄  팝업 DOM 저장: {path}")
+
+        async def _handover(why: str):
+            await page.screenshot(path="bokmu_unexpected_popup.png")
+            paths = dump_popup_html("unexpected", popups)
+            seen = "\n    ---\n".join(
+                f"[{a or '무제'}] {norm_text(x)}" for _, a, x, _ in popups)
+            await pause_for_manual(
+                f"{why} 화면을 보고 직접 눌러 주세요.",
+                f"    기대한 확인창: {EXPECTED_DESC}\n"
+                f"    실제 확인창 내용:\n    {seen}\n"
+                f"    화면: bokmu_unexpected_popup.png\n"
+                f"    팝업 DOM: {', '.join(paths)}",
+            )
+
+        # 메시지 상자가 둘 이상 겹쳐 있으면 어느 것이 지금 것인지 단정할 수 없다.
+        if len(popups) != 1:
+            await _handover(f"확인창이 {len(popups)}개 겹쳐 떠 있습니다.")
+            return False
+
+        btn, aria, text, _html = popups[0]
+        step = match_popup_step(aria, text)
+        if step is None:
+            await _handover("예상과 다른 확인창입니다.")
+            return False
+        if step < step_ptr:
+            await _handover("이미 지난 단계의 확인창이 다시 떴습니다.")
+            return False
+
+        # 상자 안에 확인 버튼이 정확히 하나인지 본다 (숨은 복제 버튼 방지)
+        if await btn.count() != 1:
+            await _handover(f"확인 버튼이 {await btn.count()}개입니다.")
+            return False
+
+        await btn.click(timeout=3000)
+        step_ptr = step + 1
+        if step == len(SUBMIT_POPUP_STEPS) - 1:
+            submitted = True
         await page.wait_for_timeout(500)
-        btn = page.locator('[role="button"][aria-label="확인"]:visible')
-        if await btn.count() > 0:
-            await btn.first.click(timeout=3000)
-            continue
-        a_confirm = page.locator("a").filter(has_text=re.compile(r"^확인$"))
-        if await a_confirm.count() > 0 and await a_confirm.last.is_visible():
-            await a_confirm.last.click(force=True, timeout=3000)
-            continue
-        break
+
+    if not submitted:
+        await page.screenshot(path="bokmu_submit_unconfirmed.png")
+        await pause_for_manual(
+            "'상신하겠습니까?' 확인창을 찾지 못했습니다. 화면을 보고 직접 마무리해 주세요.",
+            "    화면: bokmu_submit_unconfirmed.png",
+        )
+        return False
+
+    return True
 
 
 async def run(args):
@@ -266,8 +432,16 @@ async def run(args):
             if args.dry_run:
                 print("🧪  --dry-run 모드: 승인요청을 누르지 않고 종료합니다.")
             else:
-                await submit(page, dialog, approval_line=args.approval_line)
-                print("🎉  결재선 지정 + 상신 완료!")
+                ok = await submit(
+                    page, dialog,
+                    approval_line=args.approval_line,
+                    dump_popup=args.dump_popup,
+                )
+                if ok:
+                    print("🎉  결재선 지정 + 상신 완료!")
+                else:
+                    print("⚠️  자동 상신을 끝내지 못해 사람에게 넘겼습니다.")
+                    print("    나이스에서 상신 상태를 꼭 직접 확인하세요.")
 
             print("\n브라우저는 15초 후 자동으로 닫힙니다...")
             await page.wait_for_timeout(15_000)
@@ -298,6 +472,10 @@ def main():
         help="개인결재선 프리셋 이름 (미지정 시 설정 파일의 approval_line 값을 쓴다)",
     )
     parser.add_argument("--dry-run", action="store_true", help="폼만 채우고 승인요청은 누르지 않음")
+    parser.add_argument(
+        "--dump-popup", action="store_true",
+        help="상신 뒤 뜨는 확인창의 outerHTML 을 bokmu_popup_*.html 로 남긴다 (진단용)",
+    )
     args = parser.parse_args()
     asyncio.run(run(args))
 

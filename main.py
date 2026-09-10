@@ -541,7 +541,20 @@ async def handle_magam_popup(page: Page, gubun: str, jongryu: str):
     await page.wait_for_timeout(400)
 
 
-async def enter_student(page: Page, task: dict, day_cols=None):
+# 학생 한 명의 결과 갈래
+FAILED  = "failed"   # ❌ 아예 안 들어감 — 나이스에서 직접 넣어야 한다
+PARTIAL = "partial"  # ⚠️ 들어갔지만 교시 칸이 빔 — 교시만 채우면 된다
+
+
+async def enter_student(page: Page, task: dict, day_cols=None) -> tuple[str, str] | None:
+    """한 학생의 출결을 입력한다.
+
+    돌려주는 값: 다 들어갔으면 None, 아니면 (갈래, 이유).
+      (FAILED,  이유) — 한 칸도 안 들어갔다
+      (PARTIAL, 이유) — 구분/종류는 들어갔는데 교시 칸이 비었다
+    예전에는 print 만 하고 삼켜서, 한 명이 빠져도 루프는 그대로 돌고
+    마지막에 '모든 출결 입력 완료'가 찍혔다 — 누가 빠졌는지 알 길이 없었다.
+    """
     name    = task["name"]
     number  = task["number"]
     gubun   = task["gubun"]
@@ -558,7 +571,9 @@ async def enter_student(page: Page, task: dict, day_cols=None):
             print(f"  ⛔  {number}번 {name}: 이 날은 {last}교시까지입니다 "
                   f"— note '{note}' 의 {_g}교시는 없는 교시라 입력하지 않았습니다.")
             print(f"      캘린더 제목을 그날 시간표에 맞게 고친 뒤 다시 돌려주세요.")
-            return
+            return (FAILED, f"이 날은 {last}교시까지인데 note '{note}' 는 {_g}교시를 가리킴")
+
+    partial_reason = None
 
     try:
         # 1단계: 항상 마감(col=2) 셀 클릭 → 구분/종류 팝업 → 적용
@@ -584,16 +599,62 @@ async def enter_student(page: Page, task: dict, day_cols=None):
                     await page.wait_for_timeout(300)
                 gyosi_label = " 조회" if gyosi_num == 0 else f" {gyosi_num}교시"
             else:
+                # 구분/종류는 이미 들어갔지만 교시 칸은 빈 채로 남는다.
+                # 예전에는 ✅ 로만 찍혀 '성공'으로 세었다 — 선생님이 알 수가 없었다.
                 gyosi_label = f" (교시 미지정, note='{note}')"
-                print(f"  ⚠️  {number}번 {name}: 교시 정보를 note에서 찾을 수 없음")
+                print(f"  ⚠️  {number}번 {name}: 교시 정보를 note에서 찾을 수 없음 "
+                      f"— 교시 칸이 빈 채로 들어갑니다")
+                partial_reason = f"note='{note}' 에서 교시를 못 읽어 교시 칸이 빔"
             print(f"  ✅  {number}번 {name}: {gubun}/{jongryu}{gyosi_label}")
         else:
             print(f"  ✅  {number}번 {name}: {gubun}/{jongryu}")
     except Exception as e:
         print(f"  ❌  {number}번 {name} 실패: {e}")
+        return (FAILED, f"{type(e).__name__}: {e}")
+
+    if partial_reason:
+        return (PARTIAL, partial_reason)
+    return None
 
 
-async def save_page(page: Page):
+def report_failures(problems: list[dict]) -> int:
+    """못 들어간 학생을 갈래별로 찍고 종료코드를 돌려준다 (하나라도 있으면 1)."""
+    if not problems:
+        print("\n🎉  모든 출결 입력 완료!")
+        return 0
+
+    failed  = [p for p in problems if p["kind"] == FAILED]
+    partial = [p for p in problems if p["kind"] == PARTIAL]
+
+    def block(items, mark, title, tail):
+        print("\n" + "!" * 60)
+        print(f"{mark}  {len(items)}명 — {title}")
+        print("!" * 60)
+        for p in items:
+            print(f"  {mark}  {p['date'].strftime('%m/%d')}  {p['number']}번 {p['name']}")
+            print(f"        이유: {p['reason']}")
+        print("!" * 60)
+        print(f"  ※  {tail}")
+        print("!" * 60)
+
+    if failed:
+        block(failed, "❌", "안 들어감 (나이스에서 직접 넣어야 함)",
+              "이 학생들은 저장된 내용에 없습니다. 나이스에서 직접 입력해 주세요.")
+    if partial:
+        block(partial, "⚠️", "들어갔지만 교시 없음 (교시만 채우면 됨)",
+              "구분·종류는 저장됐습니다. 나이스에서 교시 칸만 채워 주세요.")
+
+    print(f"\n   정리: ❌ 안 들어감 {len(failed)}명 / ⚠️ 교시 없음 {len(partial)}명")
+    return 1
+
+
+async def save_page(page: Page) -> tuple[bool, str]:
+    """그날 입력분을 저장한다. 돌려주는 값: (저장됐나, 이유).
+
+    ⚠️ 예전에는 확인 팝업 두 개를 각각 `except: pass` 로 삼키고 아무것도 돌려주지
+       않았다. 그래서 «저장이 안 됐는데 마지막에 🎉 가 뜨고 종료코드 0» 이 될 수
+       있었다 — 그날 학생 전원이 통째로 빠지는 건데도 알 길이 없었다.
+    """
     # 직전 단계에서 알림 팝업·사이드바 오버레이가 남아 있으면 저장 클릭을 막으므로 먼저 정리
     await dismiss_alert_popup(page, timeout=1000)
     overlay = page.locator(".cl-overlay")
@@ -606,27 +667,38 @@ async def save_page(page: Page):
     await page.wait_for_timeout(600)
 
     # 1차 팝업: "저장하시겠습니까?" → 확인
+    asked = False
     try:
         await page.wait_for_selector("text=저장하시겠습니까", timeout=5000)
-        await click_confirm(page, timeout=3000)
-        print("  ✅  저장 확인")
+        asked = await click_confirm(page, timeout=3000)
+        if asked:
+            print("  ✅  저장 확인")
         await page.wait_for_timeout(600)
-    except:
+    except Exception:
         pass
 
     # 2차 팝업: "저장했습니다" 또는 "변경된 내용이 없습니다" → 확인
+    told = False
+    no_change = False
     try:
         await page.wait_for_selector("text=알림", timeout=6000)
-        is_no_change = await page.locator("text=변경된 내용이 없습니다").count() > 0
-        await click_confirm(page, timeout=3000)
-        if is_no_change:
+        no_change = await page.locator("text=변경된 내용이 없습니다").count() > 0
+        told = await click_confirm(page, timeout=3000)
+        if no_change:
             print("  ℹ️  변경 내용 없음 (이미 저장됨)")
         else:
             print("  💾  저장 완료!")
-    except:
+    except Exception:
         pass
 
     await page.wait_for_timeout(600)
+
+    if no_change:
+        # 방금 학생을 넣었는데 «변경 없음» 이면 입력이 반영되지 않은 것이다.
+        return (False, "나이스가 「변경된 내용이 없습니다」라고 답했습니다 — 입력이 반영되지 않았습니다")
+    if not (asked or told):
+        return (False, "저장 확인창이 뜨지 않았습니다 — 저장됐는지 확인할 수 없습니다")
+    return (True, "")
 
 
 # ============================================================
@@ -708,6 +780,9 @@ async def main():
         page = context.pages[0] if context.pages else await context.new_page()
         await page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
 
+        failures: list[dict] = []   # 못 들어간 학생 (날짜·갈래·번호·이름·이유)
+        exit_code = 0
+
         try:
             await page.goto(NEIS_URL)
             await auto_login(page)
@@ -738,14 +813,43 @@ async def main():
                 if last_p:
                     print(f"    이 날 시간표: {last_p}교시까지")
                 for task in tasks:
-                    await enter_student(page, task, day_cols)
-                await save_page(page)
+                    result = await enter_student(page, task, day_cols)
+                    if result:
+                        kind, reason = result
+                        failures.append({
+                            "date":   d,
+                            "kind":   kind,
+                            "number": task["number"],
+                            "name":   task["name"],
+                            "reason": reason,
+                        })
+                # 실패자가 있어도 저장은 그대로 한다 —
+                # 여기서 막으면 이미 들어간 학생들까지 같이 날아간다.
+                saved, save_reason = await save_page(page)
+                if not saved:
+                    # 저장이 안 됐으면 그날 «전원» 이 안 들어간 것이다.
+                    # 이미 개별 사유로 잡힌 학생은 빼고 나머지를 통째로 올린다.
+                    already = {f["name"] for f in failures if f["date"] == d}
+                    print(f"  ❌  {d.strftime('%m/%d')} 저장 실패 — {save_reason}")
+                    for task in tasks:
+                        if task["name"] in already:
+                            continue
+                        failures.append({
+                            "date":   d,
+                            "kind":   FAILED,
+                            "number": task["number"],
+                            "name":   task["name"],
+                            "reason": f"저장 실패 — {save_reason}",
+                        })
 
-            print("\n🎉  모든 출결 입력 완료!")
+            exit_code = report_failures(failures)
         except Exception as e:
             import traceback
             print(f"\n❌  오류 발생: {e}")
             traceback.print_exc()
+            if failures:
+                report_failures(failures)
+            exit_code = 1
             print("\n⚠️  브라우저는 열려 있습니다. 확인 후 Enter를 누르세요.")
             try:
                 input("브라우저 닫으려면 Enter...")
@@ -754,6 +858,8 @@ async def main():
         finally:
             await context.close()
 
+        return exit_code
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()) or 0)
