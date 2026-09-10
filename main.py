@@ -493,6 +493,25 @@ async def set_date_and_search(page: Page, d: date) -> bool:
 
     print(f"  📅  날짜 설정: {date_str}")
 
+    # 화면의 날짜 칸을 «읽어서» 그날이 맞는지 본다. 엉뚱한 날짜 화면에 출결을
+    # 적는 것이 제일 나쁘다. 날짜 칸 자체를 못 찾으면 예전처럼 그냥 진행한다
+    # (여기서 막으면 되던 것까지 멈춘다).
+    shown = None
+    _inputs = page.locator("input:visible")
+    for _i in range(await _inputs.count()):
+        try:
+            _v = (await _inputs.nth(_i).input_value()).strip()
+        except Exception:
+            continue
+        if re.match(r"^\d{4}\.\d{2}\.\d{2}\.?$", _v):
+            shown = _v if _v.endswith(".") else _v + "."
+            break
+    if shown is None:
+        print("  ⚠️  화면에서 날짜 칸을 못 찾아 확인하지 못했습니다 (그대로 진행)")
+    elif shown != date_str:
+        print(f"  ⛔  날짜가 안 바뀌었습니다 — 화면은 {shown}, 넣으려던 날은 {date_str}")
+        return False
+
     # 날짜를 바꾸면 나이스가 "학적변동 시간표 확인하세요" 같은 알림 팝업을 바로 띄우는
     # 경우가 있음 — 안 닫으면 팝업 오버레이가 조회 버튼 클릭을 막아 타임아웃 남
     await dismiss_alert_popup(page, timeout=1500)
@@ -600,12 +619,49 @@ def gyosi_col_index(gyosi_num: int, day_cols=None):
     return 3 + gyosi_num  # 1교시→4, 4교시→7
 
 
+async def pick_student_row(page: Page, name: str, number: str):
+    """이름 «과 번호» 가 맞는 행을 고른다.
+
+    ⚠️ 예전에는 이름이 들어간 «첫 행» 을 그냥 썼다. 동명이인이 있으면 다른 학생에게
+       출결이 들어간다 — 되돌리기도 어렵고 알아채기도 어렵다 (2026-09-11 수정).
+       번호로 특정하지 못하는데 후보가 여럿이면, 넣지 않고 그 학생만 실패로 넘긴다.
+    """
+    rows = page.locator(".cl-grid-row").filter(has_text=name)
+    n = await rows.count()
+    if n == 0:
+        raise RuntimeError("'" + name + "' 이름이 있는 행을 찾지 못했습니다")
+
+    num = str(number).strip()
+    matched = []
+    for i in range(n):
+        r = rows.nth(i)
+        try:
+            txt = " ".join((await r.inner_text(timeout=2000)).split())
+        except Exception:
+            continue
+        if re.search(r"(?<!\d)" + re.escape(num) + r"(?!\d)", txt):
+            matched.append(r)
+
+    if len(matched) == 1:
+        return matched[0]
+    if len(matched) > 1:
+        raise RuntimeError(
+            f"번호 {num}·이름 '{name}' 에 맞는 행이 {len(matched)}개입니다 — "
+            f"엉뚱한 학생에게 넣지 않으려고 멈췄습니다. 나이스에서 직접 넣어 주세요")
+    if n == 1:
+        # 번호를 행 글자에서 못 읽었지만 이름이 유일하다 — 예전과 같게 그 행을 쓴다.
+        return rows.first
+    raise RuntimeError(
+        f"'{name}' 이름이 붙은 행이 {n}개인데 번호 {num} 와 맞는 행을 못 찾았습니다 — "
+        f"엉뚱한 학생에게 넣지 않으려고 멈췄습니다. 나이스에서 직접 넣어 주세요")
+
+
 async def click_magam_cell(page: Page, name: str, number: str, col: int = 2):
     """셀 클릭. col은 td 0-based 인덱스.
     CSS nth-child 오프셋 = col + 2 (그리드 구조상 앞에 숨은 열이 1개 있음)
     마감=2→nth-child(4), 조회=3→nth-child(5), 1교시=4→nth-child(6), 4교시=7→nth-child(9) ...
     """
-    row = page.locator(".cl-grid-row").filter(has_text=name).first
+    row = await pick_student_row(page, name, number)
     await row.scroll_into_view_if_needed()
     await page.wait_for_timeout(150)
 
@@ -685,7 +741,7 @@ async def enter_student(page: Page, task: dict, day_cols=None) -> tuple[str, str
             gyosi_num = parse_gyosi_num(note, jongryu)
             if gyosi_num is not None:
                 col = gyosi_col_index(gyosi_num, day_cols)
-                row = page.locator(".cl-grid-row").filter(has_text=name).first
+                row = await pick_student_row(page, name, number)
                 nth = col + 2
                 cell = row.locator(f"> div:nth-child({nth})").locator(".cl-text")
                 if await cell.count() == 0:
@@ -787,33 +843,42 @@ async def save_page(page: Page) -> tuple[str, str]:
     except Exception:
         pass
 
-    # 2차 팝업: "저장했습니다" 또는 "변경된 내용이 없습니다" → 확인
+    # 2차 팝업: 나이스가 «결과» 를 알려주는 창.
+    # ⚠️ 창이 떴다는 것만으로 성공으로 세면 «오류 알림» 까지 성공이 된다.
+    #    판정 근거는 창이 뜬 사실이 아니라 창의 «본문 글자» 다 (2026-09-11).
     told = False
-    no_change = False
+    body = ""
     try:
         await page.wait_for_selector("text=알림", timeout=6000)
-        no_change = await page.locator("text=변경된 내용이 없습니다").count() > 0
+        try:
+            body = " ".join(
+                (await page.locator('[role="dialog"]:visible').last.inner_text(timeout=2000)).split())
+        except Exception:
+            body = ""
         told = await click_confirm(page, timeout=3000)
-        if no_change:
-            print("  ℹ️  변경 내용 없음 (이미 저장됨)")
-        else:
-            print("  💾  저장 완료!")
     except Exception:
         pass
 
     await page.wait_for_timeout(600)
 
-    if no_change:
-        # 이미 같은 내용이 들어 있어도, 입력이 반영되지 않아도 이 창이 뜬다.
-        # 둘을 구분할 방법이 없으므로 «모른다» 로 둔다.
+    # 성공 문구에 섞일 리 없는 말들. 하나라도 있으면 성공으로 세지 않는다.
+    BAD_WORDS = ("없습니다", "실패", "오류", "않았", "불가")
+
+    if not told:
+        return (SAVE_UNSURE, "저장 결과창을 못 봤습니다 — 저장됐는지 확인할 수 없습니다")
+    if "변경된 내용이 없습니다" in body:
+        print("  ⚠️  나이스: 「변경된 내용이 없습니다」")
         return (SAVE_UNSURE,
                 "나이스가 「변경된 내용이 없습니다」라고 답했습니다 — "
                 "이미 같은 내용이 들어 있거나, 입력이 반영되지 않았습니다")
-    if not told:
-        # asked(저장하시겠습니까 → 확인) 만으로는 저장을 «눌렀다» 는 것뿐이다.
-        return (SAVE_UNSURE,
-                "저장 결과창(「저장했습니다」)을 못 봤습니다 — 저장됐는지 확인할 수 없습니다")
-    return (SAVE_OK, "")
+    if "저장" in body and not any(w in body for w in BAD_WORDS):
+        print("  💾  저장 완료!")
+        return (SAVE_OK, "")
+    if not body:
+        # 창은 떴는데 글자를 못 읽었다. 성공이라고 말할 근거가 없다.
+        return (SAVE_UNSURE, "저장 결과창의 글자를 읽지 못했습니다 — 나이스에서 눈으로 확인하세요")
+    print(f"  ⚠️  저장 결과창이 예상과 다릅니다: {body[:80]}")
+    return (SAVE_UNSURE, f"저장 결과창: 「{body[:120]}」")
 
 
 # ============================================================
@@ -924,7 +989,17 @@ async def main():
                     continue
                 print(f"\n📅  {d.strftime('%Y년 %m월 %d일')} ({len(tasks)}명)...")
                 await dismiss_alert_popup(page, timeout=1000)
-                await set_date_and_search(page, d)
+                if not await set_date_and_search(page, d):
+                    print(f"  ⛔  {d.strftime('%m/%d')} 건너뜀 — 날짜를 못 맞췄습니다")
+                    for task in tasks:
+                        failures.append({
+                            "date":   d,
+                            "kind":   FAILED,
+                            "number": task["number"],
+                            "name":   task["name"],
+                            "reason": "화면 날짜가 그날로 바뀌지 않아 입력하지 않았습니다",
+                        })
+                    continue
                 day_cols = await read_day_columns(page)
                 last_p = day_last_period(day_cols)
                 if last_p:
@@ -946,10 +1021,17 @@ async def main():
                 if save_status != SAVE_OK:
                     # 저장을 확인하지 못했으면 그날 «전원» 이 불확실하다.
                     # 이미 개별 사유로 잡힌 학생은 빼고 나머지를 통째로 올린다.
-                    already = {f["name"] for f in failures if f["date"] == d}
+                    # 저장을 확인 못 했으면 «구분·종류는 저장됐다» 고 말할 수 없다.
+                    # 그날 ⚠️(교시만 빔) 로 잡아둔 학생도 ❓ 로 내린다.
+                    for f in failures:
+                        if f["date"] == d and f["kind"] == PARTIAL:
+                            f["kind"]   = UNSURE
+                            f["reason"] = f["reason"] + " · " + save_reason
+                    # 이름만으로 세면 동명이인이 명단에서 빠진다 — 번호까지 같이 본다.
+                    already = {(f["number"], f["name"]) for f in failures if f["date"] == d}
                     print(f"  ❓  {d.strftime('%m/%d')} 저장 확인 실패 — {save_reason}")
                     for task in tasks:
-                        if task["name"] in already:
+                        if (task["number"], task["name"]) in already:
                             continue
                         failures.append({
                             "date":   d,
