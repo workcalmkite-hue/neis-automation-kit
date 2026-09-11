@@ -154,8 +154,9 @@ async def fill_work_sittn_form(
 # 하지만 둘 다 modal-msg 가 아니고 '확인' 버튼도 없어서 아래 선택자에 걸리지 않는다.
 #
 # ⚠️  innerText 에는 제목과 버튼 라벨이 같이 딸려온다.
-#     ②의 실제 값은 "확인\n상신하겠습니까?\n확인\n취소" 다. 그래서 완전일치가 아니라
-#     부분일치로 본다.
+#     ②의 실제 값은 "확인\n상신하겠습니까?\n확인\n취소" 다. 그래서 공백을 한 칸으로
+#     눌러 «버튼 글자까지 포함한 전체 본문» 이 똑같은지 본다. 부분일치가 아니다 —
+#     이유는 바로 아래 SUBMIT_POPUP_STEPS 설명.
 MSG_BOX = '[role="dialog"].modal-msg'
 
 # 정규화한 «전체 본문»으로 맞춘다. 부분일치로 두면 안 된다 —
@@ -406,6 +407,14 @@ async def run(args):
         page = context.pages[0] if context.pages else await context.new_page()
         await page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
 
+        # 사람에게 넘겼거나 오류로 끝나면 1. «상신이 됐다» 고 확신할 때만 0 이다.
+        # ⚠️ 1 은 «안 올라갔다» 가 아니라 «확인이 필요하다» 는 뜻이다.
+        #    ② 「상신하겠습니까?」를 누른 뒤에 멈춰도 1 이 나온다 — 이미 올라갔을 수 있다.
+        #    그러니 1 을 받았다고 자동으로 다시 돌리면 «두 번 상신» 이 된다. 재시도 금지.
+        # ⚠️ 0 도 «② 를 눌렀다» 까지다. 서버가 받았는지는 나이스 목록에서 눈으로 본다.
+        #    (2026-09-11 코덱스 교차검토 조건)
+        exit_code = 0
+
         try:
             await page.goto(neis.NEIS_URL)
             await neis.auto_login(page)
@@ -445,6 +454,7 @@ async def run(args):
                 if ok:
                     print("🎉  결재선 지정 + 상신 완료!")
                 else:
+                    exit_code = 1
                     print("⚠️  자동 상신을 끝내지 못해 사람에게 넘겼습니다.")
                     print("    나이스에서 상신 상태를 꼭 직접 확인하세요.")
 
@@ -455,6 +465,7 @@ async def run(args):
             import traceback
             print(f"\n❌  오류 발생: {e}")
             traceback.print_exc()
+            exit_code = 1
             print("\n⚠️  브라우저는 열려 있습니다. 확인 후 Enter를 누르세요.")
             try:
                 input("브라우저 닫으려면 Enter...")
@@ -462,6 +473,8 @@ async def run(args):
                 pass
         finally:
             await context.close()
+
+        return exit_code
 
 
 def main():
@@ -482,7 +495,7 @@ def main():
         help="상신 뒤 뜨는 확인창의 outerHTML 을 bokmu_popup_*.html 로 남긴다 (진단용)",
     )
     args = parser.parse_args()
-    asyncio.run(run(args))
+    sys.exit(asyncio.run(run(args)) or 0)
 
 
 if __name__ == "__main__":
