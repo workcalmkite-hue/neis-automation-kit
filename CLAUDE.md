@@ -85,6 +85,8 @@ fix_cert.py          인증서 이름·비밀번호만 다시 설정
 teacher_config.py    설정 저장/로드
 app.py               exe 배포용 진입점 (설정 없으면 마법사부터)
 mcp_server.py        Claude Code용 MCP 서버 (캘린더 생성·출결 입력)
+neis_session.py      나이스에 로그인해 둔 크롬을 열어 둔다 (출장·41조처럼 스크립트 없는 화면용). --check 는 점검만
+neis_cdp.py          열어 둔 크롬에 붙어 스니펫 파일을 실행 (브라우저 도구로는 나이스 로그인이 안 된다)
 .mcp.json            MCP 연결 정보 — 폴더를 열면 자동으로 읽힌다
 .claude/skills/      Claude Code 스킬 (출결·복무·출장·41조연수·캘린더 입력)
 docs/                선생님용 안내 문서
