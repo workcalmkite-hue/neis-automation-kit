@@ -105,14 +105,29 @@ def marks_of(named):
 
 
 PERIOD_RE = re.compile(r"^(\d+)교시$")
+MORNING_COL = "조회"   # 조회 칸은 0교시로 센다 (입력기 parse_gyosi_num 도 '조회' → 0)
+
+
+def _period_label(n):
+    return "조회" if n == 0 else f"{n}교시"
 
 
 def _marked_periods(marks):
-    """나이스 화면에서 '/' 로 표시된 교시 번호 (= 빠진 교시)."""
+    """나이스 화면에서 '/' 로 표시된 교시 번호 (= 빠진 교시). 조회 칸은 0.
+
+    ⚠️ 예전에는 N교시 열만 세서 «조회» 칸의 '/' 를 놓쳤다 — 조회 지각은 늘
+       「빠진 교시 표시(/)가 하나도 없음」 으로 나왔다
+       (2026-09-11 실측: 조회 지각 행 셀 index 4 = 조회 에 '/').
+    """
     out = []
     for col, val in marks.items():
+        if val != "/":
+            continue
+        if col == MORNING_COL:
+            out.append(0)
+            continue
         m = PERIOD_RE.match(col)
-        if m and val == "/":
+        if m:
             out.append(int(m.group(1)))
     return sorted(out)
 
@@ -121,26 +136,21 @@ def _check_periods(jongryu, note, marks):
     """교시 범위가 맞는지. 맞으면 None, 틀리면 사유 문자열.
 
     조퇴 `N교시~` = N교시부터 빠짐  → '/' 가 N교시에서 시작해야 한다
-    지각 `~N교시` = N교시까지 빠짐  → '/' 가 N교시에서 끝나야 한다
+    지각 `~N교시` = N교시까지 빠짐  → '/' 가 N교시에서 끝나야 한다 (조회 지각은 조회 칸에서)
+    기대 교시는 입력기와 같은 함수(M.parse_gyosi_num)로 읽는다 — 넣는 쪽과 보는 쪽이 어긋나지 않게.
     """
     got = _marked_periods(marks)
     if not got:
         return "빠진 교시 표시(/)가 하나도 없음"
-    if jongryu == "결석":
+    if jongryu not in ("조퇴", "지각"):
         return None                       # 결석은 전 교시가 대상이라 범위를 따로 보지 않는다
-    m = re.search(r"(\d+)\s*교시\s*~", note)
-    if m and jongryu == "조퇴":
-        want = int(m.group(1))
-        if min(got) != want:
-            return f"{want}교시부터여야 하는데 나이스는 {min(got)}교시부터"
-        return None
-    m = re.search(r"~\s*(\d+)\s*교시", note)
-    if m and jongryu == "지각":
-        want = int(m.group(1))
-        if max(got) != want:
-            return f"{want}교시까지여야 하는데 나이스는 {max(got)}교시까지"
-        return None
-    return None                           # 교시 표기가 없으면 범위는 검사하지 않는다
+    want = M.parse_gyosi_num(note, jongryu)
+    if want is None:
+        return None                       # 교시 표기가 없으면 범위는 검사하지 않는다
+    edge, word = (min(got), "부터") if jongryu == "조퇴" else (max(got), "까지")
+    if edge != want:
+        return f"{_period_label(want)}{word}여야 하는데 나이스는 {_period_label(edge)}{word}"
+    return None
 
 
 def compare_day(expected, actual):

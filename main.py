@@ -185,6 +185,26 @@ def _missed_periods(task: dict) -> float:
     return 50
 
 
+def _pick_duplicate(kept: dict, other: dict, day: date) -> dict:
+    """같은 날·같은 학생·같은 분류 이벤트가 둘일 때 어느 쪽을 쓸지 고른다.
+
+    ⚠️ 예전에는 먼저 읽힌 쪽을 무조건 남겼다. 캘린더에 빈 중복 이벤트가 있으면
+       교시가 적힌 쪽이 버려지고 교시 없는 지각이 입력됐다
+       (2026-09-08 실측: note '' 건과 '~2교시' 건 중 '' 가 남음).
+    → 교시를 읽을 수 있는 쪽을 쓴다. 둘 다 읽히는데 교시가 서로 다르면 어느 쪽이 맞는지
+      모르므로 «conflict» 를 달아 둔다 — enter_student 가 그 학생을 넣지 않고 ❌ 로 올린다.
+    """
+    k = parse_gyosi_num(kept["note"], kept["jongryu"])
+    o = parse_gyosi_num(other["note"], other["jongryu"])
+    pick, drop = (other, kept) if (k is None and o is not None) else (kept, other)
+    print(f"  🔁 중복: {day} {pick['number']}번 {pick['name']} [{pick['label']}] "
+          f"— note '{pick['note']}' 를 쓰고 '{drop['note']}' 는 버립니다")
+    if k is not None and o is not None and k != o:
+        return {**pick, "conflict": f"캘린더에 같은 {pick['label']} 이벤트가 둘인데 교시가 다름 "
+                                    f"('{kept['note']}' / '{other['note']}')"}
+    return pick
+
+
 def build_task_map(records: list[dict]) -> dict[date, list[dict]]:
     task_map: dict[date, list[dict]] = {}
     for rec in records:
@@ -198,19 +218,22 @@ def build_task_map(records: list[dict]) -> dict[date, list[dict]]:
                 cur += timedelta(days=1)
                 continue
             tasks = task_map.setdefault(cur, [])
+            new_task = {
+                "number":  rec["number"],
+                "name":    rec["name"],
+                "gubun":   att[0],
+                "jongryu": att[1],
+                "note":    rec["note"],
+                "label":   rec["att_type"],
+            }
             # 같은 학생이라도 분류가 다르면 둘 다 입력 (예: 같은 날 지각+조퇴)
-            # — 완전히 동일한 (학생, 분류) 건만 중복으로 건너뜀
-            if not any(t["number"] == rec["number"] and t["label"] == rec["att_type"] for t in tasks):
-                tasks.append({
-                    "number":  rec["number"],
-                    "name":    rec["name"],
-                    "gubun":   att[0],
-                    "jongryu": att[1],
-                    "note":    rec["note"],
-                    "label":   rec["att_type"],
-                })
+            # — 완전히 동일한 (학생, 분류) 건만 하나로 합친다
+            dup = next((i for i, t in enumerate(tasks)
+                        if t["number"] == rec["number"] and t["label"] == rec["att_type"]), None)
+            if dup is None:
+                tasks.append(new_task)
             else:
-                print(f"  🔁 중복 건너뜀: {cur} {rec['number']}번 {rec['name']} [{rec['att_type']}]")
+                tasks[dup] = _pick_duplicate(tasks[dup], new_task, cur)
             cur += timedelta(days=1)
     # 같은 학생이 하루에 여러 건이면 빠진 시간이 짧은 것부터 입력하고
     # 제일 많이 빠진(제일 안 좋은) 건을 맨 마지막에 입력한다.
@@ -318,28 +341,81 @@ async def wait_for_attendance_page(page: Page):
     raise last_error
 
 
-async def click_confirm(page: Page, timeout: int = 3000) -> bool:
-    """현재 열려있는 팝업의 (실제로 보이는) '확인' 버튼/링크를 클릭.
-    다른 숨은 탭에 있는 동명 요소를 잘못 클릭하거나, 그런 요소 때문에
-    기본 30초 액션 타임아웃까지 기다리는 것을 막기 위해 :visible로 한정하고
-    짧은 timeout을 명시한다."""
-    btn = page.locator("a:visible, button:visible", has_text=re.compile(r"^확인$"))
+# ────────────────────────────────────────────────────────────────
+# 나이스 대화상자(알림창·확인창·저장 결과창) 찾기
+#
+# ⚠️ `wait_for_selector("text=알림")` 으로 찾으면 안 된다. 로그인 뒤 화면에는 «숨은»
+#    「민원현황 알림」 메뉴 글자가 맨 앞에 있고, wait_for_selector 는 첫 번째로 걸린
+#    요소 하나만 보고 «안 보인다» 며 끝까지 기다린다 — 알림창이 떠 있어도 시간 초과다.
+#    (2026-09-11 실측: 출결 화면에서 'text=알림' 매치 2개 · #0 숨은 「민원현황 알림」 ·
+#     #1 은 보이는데도 시간 초과. 그래서 저장이 된 날도 「결과창을 못 봤습니다」 가 났고,
+#     알림창 닫기는 로그에 한 번도 찍히지 않았다.)
+# → 글자 대신 «보이는 대화상자» 를 기다리고, 창 글자로 무슨 창인지 가린다.
+#   나이스 대화상자 = .cl-dialog-wrapper > .cl-dialog[role=dialog] (공지 팝업 DOM 실측).
+#   인증서용 [role=dialog] 18개가 늘 «숨은 채» 붙어 있어서 :visible 을 빼면 안 된다
+#   (창이 없을 때 :visible 로는 0개 — 실측).
+DIALOG_SEL = ".cl-dialog-wrapper:visible, [role=dialog]:visible"
+
+
+def dialog_title(raw: str) -> str:
+    """창 글자의 첫 줄 = 창 제목 (실측: 「알림 / 저장했습니다. / 확인」)."""
+    return next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
+
+
+async def wait_dialog(page: Page, accept, timeout_ms: int):
+    """보이는 대화상자 중 accept(창 글자) 가 참인 것을 기다린다.
+
+    돌려주는 값: (창 ElementHandle, 공백 한 칸으로 합친 글자). 못 보면 (None, "").
+    accept 에는 줄바꿈이 살아 있는 글자를 넘긴다 — 첫 줄이 창 제목이다.
+    ⚠️ locator.nth(i) 를 돌려주면 안 된다. locator 는 쓸 때마다 다시 찾기 때문에, 글자를
+       읽은 뒤 창 목록이 바뀌면 «검사한 창» 과 «누르는 창» 이 달라진다 (코덱스 검토 2026-09-11).
+       ElementHandle 은 읽은 그 요소에 고정되고, 닫혔으면 클릭이 실패할 뿐 딴 창을 누르지 않는다.
+    """
+    loops = max(1, timeout_ms // 250)
+    for n in range(loops):
+        try:
+            handles = await page.locator(DIALOG_SEL).element_handles()
+        except Exception:
+            handles = []
+        for h in reversed(handles):
+            try:
+                raw = await h.inner_text()
+            except Exception:
+                continue   # 읽는 사이에 닫혔다
+            if raw.strip() and accept(raw):
+                return h, " ".join(raw.split())
+        if n < loops - 1:
+            await page.wait_for_timeout(250)
+    return None, ""
+
+
+async def click_dialog_confirm(dialog) -> bool:
+    """그 창 «안의» [확인] 을 누른다 (dialog = wait_dialog 가 준 ElementHandle).
+    나이스 버튼은 a 일 때도 div[role=button] 일 때도 있다. 창이 이미 닫혔으면 False."""
     try:
-        await btn.last.click(force=True, timeout=timeout)
-        return True
+        for btn in reversed(await dialog.query_selector_all("a, button, [role=button]")):
+            if (await btn.inner_text()).strip() == "확인":
+                await btn.click(force=True, timeout=3000)
+                return True
     except Exception:
-        return False
+        pass
+    return False
 
 
 async def dismiss_alert_popup(page: Page, timeout=3000) -> bool:
-    """알림 팝업이 뜨면 확인 클릭."""
-    try:
-        await page.wait_for_selector("text=알림", timeout=timeout)
-    except Exception:
+    """제목이 「알림」 인 창이 떠 있으면 [확인] 을 누르고, 무슨 알림이었는지 남긴다.
+
+    「저장하시겠습니까?」 같은 확인창(제목 「확인」)이나 공지 팝업(제목 「공지사항」,
+    dismiss_notice_popup 담당)은 건드리지 않는다.
+    """
+    # 제목이 「알림」 이어도 묻는 창(하시겠습니까)은 누르지 않는다 — [확인] 이 무슨 일을 할지 모른다.
+    dialog, text = await wait_dialog(
+        page, lambda raw: dialog_title(raw) == "알림" and "하시겠습니까" not in raw, timeout)
+    if dialog is None:
         return False
-    ok = await click_confirm(page, timeout=3000)
+    ok = await click_dialog_confirm(dialog)
     if ok:
-        print("  ℹ️  알림 팝업 닫기")
+        print(f"  ℹ️  알림 팝업 닫기: {text[:70]}")
         await page.wait_for_timeout(400)
     return ok
 
@@ -682,7 +758,7 @@ async def handle_magam_popup(page: Page, gubun: str, jongryu: str):
 
 # 학생 한 명의 결과 갈래
 FAILED  = "failed"   # ❌ 아예 안 들어감 — 나이스에서 직접 넣어야 한다
-PARTIAL = "partial"  # ⚠️ 들어갔지만 교시 칸이 빔 — 교시만 채우면 된다
+PARTIAL = "partial"  # 구분·종류는 넣었는데 교시 칸에서 실패 — enter_day 가 그날을 다시 불러 처리한다
 UNSURE  = "unsure"   # ❓ 들어갔는지 «확인할 수 없다» — 나이스에서 눈으로 봐야 한다
 
 # 저장 결과 (save_page 가 돌려준다)
@@ -695,7 +771,7 @@ async def enter_student(page: Page, task: dict, day_cols=None) -> tuple[str, str
 
     돌려주는 값: 다 들어갔으면 None, 아니면 (갈래, 이유).
       (FAILED,  이유) — 한 칸도 안 들어갔다
-      (PARTIAL, 이유) — 구분/종류는 들어갔는데 교시 칸이 비었다
+      (PARTIAL, 이유) — 구분/종류는 화면에 넣었는데 그 뒤(교시 칸)에서 실패했다
     예전에는 print 만 하고 삼켜서, 한 명이 빠져도 루프는 그대로 돌고
     마지막에 '모든 출결 입력 완료'가 찍혔다 — 누가 빠졌는지 알 길이 없었다.
     """
@@ -705,19 +781,34 @@ async def enter_student(page: Page, task: dict, day_cols=None) -> tuple[str, str
     jongryu = task["jongryu"]
     note    = task["note"]
 
+    if task.get("conflict"):
+        print(f"  ❌  {number}번 {name}: {task['conflict']} — 입력하지 않았습니다.")
+        return (FAILED, task["conflict"])
+
+    if jongryu in ("조퇴", "지각"):
+        _g = parse_gyosi_num(note, jongryu)
+        # 교시를 못 읽으면 아예 손대지 않는다.
+        # ⚠️ 예전에는 구분·종류만 넣고 ⚠️(교시 없음) 로 넘어갔다. 그런데 나이스는 교시 없는
+        #    조퇴·지각이 한 줄이라도 있으면 그날 저장을 «통째로» 받지 않는다 — 같은 날 다른
+        #    학생까지 빠진다 (2026-09-08 실측: 두 명 넣고 저장 → 두 줄 다 빈칸 /
+        #    교시 없는 지각을 빼고 한 명만 저장 → 「저장했습니다.」).
+        if _g is None:
+            print(f"  ❌  {number}번 {name}: note '{note}' 에서 교시를 못 읽어 입력하지 않았습니다 "
+                  f"— 넣으면 그날 저장이 통째로 막힙니다.")
+            print(f"      캘린더 제목 끝 괄호에 교시를 적은 뒤 다시 돌려주세요 (예: (4교시~)).")
+            return (FAILED, f"{jongryu}인데 note '{note}' 에서 교시를 못 읽음 "
+                            f"(넣으면 그날 저장이 통째로 막혀서 넣지 않음)")
     # 없는 교시를 요구하면 아예 손대지 않는다.
     # 그날 3교시까지인데 '5교시~'를 넣으라고 하면, 예전 코드는 위치를 고정 계산해
     # '사유' 칸이나 '종례' 칸을 눌러 엉뚱한 값을 만들었다 (오류도 안 났다).
     if jongryu in ("조퇴", "지각") and day_cols:
-        _g = parse_gyosi_num(note, jongryu)
-        if _g is not None and gyosi_col_index(_g, day_cols) is None:
+        if gyosi_col_index(_g, day_cols) is None:
             last = day_last_period(day_cols)
             print(f"  ⛔  {number}번 {name}: 이 날은 {last}교시까지입니다 "
                   f"— note '{note}' 의 {_g}교시는 없는 교시라 입력하지 않았습니다.")
             print(f"      캘린더 제목을 그날 시간표에 맞게 고친 뒤 다시 돌려주세요.")
             return (FAILED, f"이 날은 {last}교시까지인데 note '{note}' 는 {_g}교시를 가리킴")
 
-    partial_reason = None
     applied = False   # 구분·종류가 «들어간» 뒤부터 True — 여기서 터지면 ❌ 가 아니라 ⚠️ 다
 
     try:
@@ -728,29 +819,22 @@ async def enter_student(page: Page, task: dict, day_cols=None) -> tuple[str, str
 
         if jongryu in ("조퇴", "지각"):
             # 2단계: 교시 셀 클릭 (마감 팝업 적용 후 수정된 행에서 해당 교시 셀 클릭)
+            # 교시를 못 읽는 경우는 위에서 이미 걸러냈다 — 여기서 gyosi_num 은 None 이 아니다.
             gyosi_num = parse_gyosi_num(note, jongryu)
-            if gyosi_num is not None:
-                col = gyosi_col_index(gyosi_num, day_cols)
-                row = await pick_student_row(page, name, number)
-                nth = col + 2
-                cell = row.locator(f"> div:nth-child({nth})").locator(".cl-text")
-                if await cell.count() == 0:
-                    cell = row.locator(f"> div:nth-child({nth})")
-                await cell.click(timeout=5000)
+            col = gyosi_col_index(gyosi_num, day_cols)
+            row = await pick_student_row(page, name, number)
+            nth = col + 2
+            cell = row.locator(f"> div:nth-child({nth})").locator(".cl-text")
+            if await cell.count() == 0:
+                cell = row.locator(f"> div:nth-child({nth})")
+            await cell.click(timeout=5000)
+            await page.wait_for_timeout(300)
+            # 교시 셀 클릭 후 팝업이 다시 열리면 그대로 적용
+            apply_btn = page.locator("a").filter(has_text=re.compile(r"^적용$"))
+            if await apply_btn.count() > 0:
+                await apply_btn.click()
                 await page.wait_for_timeout(300)
-                # 교시 셀 클릭 후 팝업이 다시 열리면 그대로 적용
-                apply_btn = page.locator("a").filter(has_text=re.compile(r"^적용$"))
-                if await apply_btn.count() > 0:
-                    await apply_btn.click()
-                    await page.wait_for_timeout(300)
-                gyosi_label = " 조회" if gyosi_num == 0 else f" {gyosi_num}교시"
-            else:
-                # 구분/종류는 이미 들어갔지만 교시 칸은 빈 채로 남는다.
-                # 예전에는 ✅ 로만 찍혀 '성공'으로 세었다 — 선생님이 알 수가 없었다.
-                gyosi_label = f" (교시 미지정, note='{note}')"
-                print(f"  ⚠️  {number}번 {name}: 교시 정보를 note에서 찾을 수 없음 "
-                      f"— 교시 칸이 빈 채로 들어갑니다")
-                partial_reason = f"note='{note}' 에서 교시를 못 읽어 교시 칸이 빔"
+            gyosi_label = " 조회" if gyosi_num == 0 else f" {gyosi_num}교시"
             print(f"  ✅  {number}번 {name}: {gubun}/{jongryu}{gyosi_label}")
         else:
             print(f"  ✅  {number}번 {name}: {gubun}/{jongryu}")
@@ -762,9 +846,84 @@ async def enter_student(page: Page, task: dict, day_cols=None) -> tuple[str, str
         print(f"  ❌  {number}번 {name} 실패: {e}")
         return (FAILED, f"{type(e).__name__}: {e}")
 
-    if partial_reason:
-        return (PARTIAL, partial_reason)
     return None
+
+
+MAX_PARTIAL_TRIES = 2   # 교시 칸에서 실패한 학생을 몇 번까지 다시 넣어 볼지
+
+
+def _failure(d: date, kind: str, task: dict, reason: str) -> dict:
+    return {"date": d, "kind": kind, "number": task["number"], "name": task["name"],
+            "label": task.get("label", ""), "reason": reason}
+
+
+async def _row_text(page: Page, task: dict):
+    """그 학생 줄에 지금 보이는 글자. 줄을 확실히 못 고르면 None."""
+    try:
+        row = await pick_student_row(page, task["name"], task["number"])
+        await row.scroll_into_view_if_needed()
+        return " | ".join(ln.strip() for ln in (await row.inner_text()).split("\n"))
+    except Exception:
+        return None
+
+
+async def _row_restored(page: Page, task: dict, before, timeout_ms: int = 4000) -> bool:
+    """다시 조회한 뒤 그 학생 줄이 넣기 전 글자(before)로 돌아왔는지."""
+    if before is None:
+        return False
+    for _ in range(max(1, timeout_ms // 250)):
+        if await _row_text(page, task) == before:
+            return True
+        await page.wait_for_timeout(250)
+    return False
+
+
+async def enter_day(page: Page, d: date, tasks: list[dict], day_cols) -> tuple[list[dict], bool]:
+    """그날 학생들을 넣는다. 돌려주는 값: (실패 목록, 저장해도 되는지).
+
+    교시 칸에서 실패한 학생(PARTIAL)이 생기면 화면에 «교시 없는 줄» 이 남는다. 나이스는
+    그런 줄이 하나라도 있으면 그날 저장을 통째로 받지 않는다 (2026-09-08 실측).
+    → 같은 날을 다시 조회해 화면 입력을 버리고 처음부터 다시 넣는다. 저장 안 한 입력은
+      조회 한 번에 사라지고 묻는 창도 없다 (2026-09-11 실측: 첫 학생 줄에 질병결석을
+      화면에만 넣고 조회 → 그 줄이 넣기 전과 똑같이 돌아옴).
+      같은 학생이 MAX_PARTIAL_TRIES 번 실패하면 그 학생만 빼고(❌) 나머지를 넣는다.
+    ⚠️ 조회가 «됐다고 믿지» 않는다. 실패한 학생 줄이 넣기 전 글자로 돌아온 것을 읽어서
+       확인한 뒤에만 다시 넣는다. 확인 못 하면 그날은 저장하지 않는다 (코덱스 검토 2026-09-11 —
+       set_date_and_search 는 조회가 거절돼도 True 를 돌려줄 수 있다).
+    """
+    tries: dict[tuple, int] = {}
+    last_reason: dict[tuple, str] = {}
+    before: dict[tuple, str | None] = {}   # 넣기 전 그 학생 줄 글자 — 지워졌는지 대조용
+    while True:
+        failures, dirty = [], None
+        for task in tasks:
+            key = (task["number"], task["name"])
+            if tries.get(key, 0) >= MAX_PARTIAL_TRIES:
+                failures.append(_failure(d, FAILED, task,
+                    f"교시 칸에서 {MAX_PARTIAL_TRIES}번 실패해 이 학생만 빼고 저장했습니다 — {last_reason[key]}"))
+                continue
+            if key not in before:
+                before[key] = await _row_text(page, task)
+            result = await enter_student(page, task, day_cols)
+            if result is None:
+                continue
+            kind, reason = result
+            if kind == PARTIAL:
+                tries[key] = tries.get(key, 0) + 1
+                last_reason[key] = reason
+                dirty = task
+                break   # 어차피 처음부터 다시 넣는다
+            failures.append(_failure(d, kind, task, reason))
+        if dirty is None:
+            return failures, True
+        print(f"  🔄  교시 없는 줄이 남았습니다 — {d.strftime('%m/%d')} 화면 입력을 버리고 다시 넣습니다")
+        dirty_before = before.get((dirty["number"], dirty["name"]))
+        if not (await set_date_and_search(page, d) and await _row_restored(page, dirty, dirty_before)):
+            print(f"  ⛔  {d.strftime('%m/%d')} 교시 없는 줄이 지워졌는지 확인하지 못해 그날은 저장하지 않습니다")
+            return [_failure(d, FAILED, t, "교시 없는 줄을 지우려고 다시 조회했는데, 그 줄이 넣기 전으로 "
+                                           "돌아온 것을 확인하지 못해 그날은 저장하지 않았습니다")
+                    for t in tasks], False
+        day_cols = await read_day_columns(page)
 
 
 def report_failures(problems: list[dict]) -> int:
@@ -774,15 +933,18 @@ def report_failures(problems: list[dict]) -> int:
         return 0
 
     failed  = [p for p in problems if p["kind"] == FAILED]
-    partial = [p for p in problems if p["kind"] == PARTIAL]
     unsure  = [p for p in problems if p["kind"] == UNSURE]
+
+    def people(items):   # 같은 학생이 그날 두 건(지각+조퇴)이면 한 명으로 센다
+        return len({(p["number"], p["name"]) for p in items})
 
     def block(items, mark, title, tail):
         print("\n" + "!" * 60)
-        print(f"{mark}  {len(items)}명 — {title}")
+        print(f"{mark}  {people(items)}명 — {title}")
         print("!" * 60)
         for p in items:
-            print(f"  {mark}  {p['date'].strftime('%m/%d')}  {p['number']}번 {p['name']}")
+            label = f" [{p['label']}]" if p.get("label") else ""
+            print(f"  {mark}  {p['date'].strftime('%m/%d')}  {p['number']}번 {p['name']}{label}")
             print(f"        이유: {p['reason']}")
         print("!" * 60)
         print(f"  ※  {tail}")
@@ -791,17 +953,65 @@ def report_failures(problems: list[dict]) -> int:
     if failed:
         block(failed, "❌", "안 들어감 (나이스에서 직접 넣어야 함)",
               "이 학생들은 저장된 내용에 없습니다. 나이스에서 직접 입력해 주세요.")
-    if partial:
-        block(partial, "⚠️", "들어갔지만 교시 없음 (교시만 채우면 됨)",
-              "구분·종류는 저장됐습니다. 나이스에서 교시 칸만 채워 주세요.")
     if unsure:
         block(unsure, "❓", "들어갔는지 확인하지 못함 (나이스에서 눈으로 확인)",
-              "나이스가 「저장되었습니다」라고 답하지 않았습니다. "
+              "나이스가 「저장했습니다」라고 답하지 않았습니다. "
               "이미 같은 내용이 있어서일 수도, 입력이 안 된 것일 수도 있습니다.")
 
-    print(f"\n   정리: ❌ 안 들어감 {len(failed)}명 / ⚠️ 교시 없음 {len(partial)}명"
-          f" / ❓ 확인 필요 {len(unsure)}명")
+    print(f"\n   정리: ❌ 안 들어감 {people(failed)}명 / ❓ 확인 필요 {people(unsure)}명")
     return 1
+
+
+# 아직 결과가 아닌 창 — 이 글자가 있으면 결과창으로 치지 않고 더 기다린다.
+NOT_RESULT_YET = ("하시겠습니까", "중입니다")
+
+# 성공 문구.
+#   「저장했습니다」   — 일일출결관리 실측 (2026-09-11 저장 직후 창 글자 「알림 / 저장했습니다. / 확인」)
+#   「저장되었습니다」 — 다른 화면(자유학기활동관리) 스크립트가 성공으로 보던 문구.
+#                        이 화면에서 본 적은 없지만 뜻이 같아 같이 받는다
+SUCCESS_TEXTS = ("저장했습니다", "저장되었습니다")
+
+# 성공 문구에 섞일 리 없는 말들. 하나라도 있으면 성공으로 세지 않는다.
+# ⚠️ «취소» 한 글자는 넣으면 안 된다 — 창 본문에 버튼 글자(확인·취소)가 같이
+#    딸려 와서 정상 저장까지 실패로 뒤집는다. 그래서 «취소되» 처럼 문장 꼴로만 잡는다.
+SAVE_BAD_WORDS = ("없습니다", "실패", "오류", "않았", "불가", "취소되", "하시겠습니까", "중입니다")
+
+
+async def _wait_result_dialog(page: Page, timeout_ms: int = 8000):
+    """«저장하시겠습니까?» 다음에 뜨는 결과창을 기다린다.
+    돌려주는 값: (창 locator, 창 글자). 못 보면 (None, "").
+
+    ⚠️ 예전에는 `wait_for_selector("text=알림")` 으로 기다렸다. 출결관리 화면에는
+       «숨은» 「민원현황 알림」 메뉴 글자가 맨 앞에 있고, wait_for_selector 는 첫 번째로
+       걸린 요소 하나만 보고 «안 보인다» 며 끝까지 기다린다. 결과창이 떠 있어도 6초 뒤
+       시간 초과였고, 실제로 저장된 날도 「저장 결과창을 못 봤습니다」가 났다
+       (2026-09-11 실측: 창 없는 화면에서 'text=알림' 매치 2개 · #0 숨은 「민원현황 알림」 ·
+        #1 이 보이는데도 wait_for_selector 시간 초과).
+    → 글자 대신 «보이는 대화상자» 를 기다리고, 아직 묻는 창·처리 중 창은 건너뛴다.
+    """
+    return await wait_dialog(page, lambda raw: not any(w in raw for w in NOT_RESULT_YET), timeout_ms)
+
+
+def _judge_save(body: str, told: bool) -> tuple[str, str]:
+    """결과창 글자로 저장됐는지 판정한다."""
+    if not body:
+        return (SAVE_UNSURE, "저장 결과창을 못 봤습니다 — 저장됐는지 확인할 수 없습니다")
+    if "변경된 내용이 없습니다" in body:
+        print("  ⚠️  나이스: 「변경된 내용이 없습니다」")
+        return (SAVE_UNSURE,
+                "나이스가 「변경된 내용이 없습니다」라고 답했습니다 — "
+                "이미 같은 내용이 들어 있거나, 입력이 반영되지 않았습니다")
+    # 아는 성공 문구일 때만 성공이다.
+    # ⚠️ 예전에는 「저장」 이 들어 있고 금지어만 없으면 성공으로 봤다. 그러면 「저장하지
+    #    못했습니다」 가 성공이 된다 (코덱스 검토 2026-09-11). 모르는 문구는 ❓ 로 올리고
+    #    글자를 남긴다 — 나이스가 문구를 바꿨다면 그 글자로 SUCCESS_TEXTS 를 고치면 된다.
+    if any(w in body for w in SAVE_BAD_WORDS) or not any(s in body for s in SUCCESS_TEXTS):
+        print(f"  ⚠️  저장 결과창이 예상과 다릅니다: {body[:80]}")
+        return (SAVE_UNSURE, f"저장 결과창: 「{body[:120]}」")
+    print("  💾  저장 완료!")
+    if not told:
+        print("  ⚠️  결과창의 [확인] 을 못 눌렀습니다 — 창이 남아 있으면 다음 날짜 입력이 막힐 수 있습니다")
+    return (SAVE_OK, "")
 
 
 async def save_page(page: Page) -> tuple[str, str]:
@@ -827,77 +1037,21 @@ async def save_page(page: Page) -> tuple[str, str]:
     await page.wait_for_timeout(600)
 
     # 1차 팝업: "저장하시겠습니까?" → 확인
-    asked = False
-    try:
-        await page.wait_for_selector("text=저장하시겠습니까", timeout=5000)
-        asked = await click_confirm(page, timeout=3000)
-        if asked:
-            print("  ✅  저장 확인")
-        await page.wait_for_timeout(600)
-    except Exception:
-        pass
+    # 결과창과 같은 이유로 글자(text=…)가 아니라 «보이는 창» 을 기다리고, 그 창 안의 [확인] 을 누른다.
+    asked_box, _ = await wait_dialog(page, lambda raw: "저장하시겠습니까" in raw, 5000)
+    if asked_box is not None and await click_dialog_confirm(asked_box):
+        print("  ✅  저장 확인")
+    await page.wait_for_timeout(600)
 
     # 2차 팝업: 나이스가 «결과» 를 알려주는 창.
     # ⚠️ 창이 떴다는 것만으로 성공으로 세면 «오류 알림» 까지 성공이 된다.
     #    판정 근거는 창이 뜬 사실이 아니라 창의 «본문 글자» 다 (2026-09-11).
+    dialog, body = await _wait_result_dialog(page)
     told = False
-    body = ""
-    seen = ""
-    try:
-        await page.wait_for_selector("text=알림", timeout=6000)
-        try:
-            body = " ".join(
-                (await page.locator('[role="dialog"]:visible').last.inner_text(timeout=2000)).split())
-        except Exception:
-            body = ""
-        # 창이 «떠 있는 동안» 화면 글자도 같이 뜬다. 알림이 role=dialog 로 안 잡히는
-        # 경우가 있어서 두 곳을 다 본다.
-        try:
-            page_text = " ".join((await page.evaluate("document.body.innerText")).split())
-        except Exception:
-            page_text = ""
-        seen = body + " " + page_text
-        told = await click_confirm(page, timeout=3000)
-    except Exception:
-        pass
-
+    if dialog is not None:
+        told = await click_dialog_confirm(dialog)
     await page.wait_for_timeout(600)
-
-    # 성공 문구에 섞일 리 없는 말들. 하나라도 있으면 성공으로 세지 않는다.
-    #
-    # ⚠️ «취소» 한 글자는 넣으면 안 된다 — 창 본문에 버튼 글자(확인·취소)가 같이
-    #    딸려 와서 정상 저장까지 실패로 뒤집는다. 그래서 «취소되» 처럼 문장 꼴로만
-    #    잡는다. 버튼은 「취소」라고만 쓰지 「취소되었습니다」라고 쓰지 않는다.
-    # ⚠️ «하시겠습니까» 는 «아직 묻고 있는 창» 이다. 결과창이 아니므로 성공이 아니다.
-    BAD_WORDS = ("없습니다", "실패", "오류", "않았", "불가",
-                 "취소되", "하시겠습니까", "중입니다")
-
-    # ★ 나이스가 저장에 성공하면 「저장되었습니다」라고 답한다.
-    #   2026-09-02·09-03 에 나이스에 직접 붙여 작업하며 쓴 fs_run.py / fs_fix4.py 가
-    #   바로 이 문구로 성공을 판정했다 (그 스크립트로 실제 저장이 됐다).
-    #   그래서 이 문구를 «맞는 답» 으로 삼는다.
-    SUCCESS_TEXT = "저장되었습니다"
-
-    if SUCCESS_TEXT in seen:
-        print("  💾  저장 완료!")
-        return (SAVE_OK, "")
-    if "변경된 내용이 없습니다" in seen:
-        print("  ⚠️  나이스: 「변경된 내용이 없습니다」")
-        return (SAVE_UNSURE,
-                "나이스가 「변경된 내용이 없습니다」라고 답했습니다 — "
-                "이미 같은 내용이 들어 있거나, 입력이 반영되지 않았습니다")
-    if not told:
-        return (SAVE_UNSURE, "저장 결과창을 못 봤습니다 — 저장됐는지 확인할 수 없습니다")
-    if "저장" in body and not any(w in body for w in BAD_WORDS):
-        # 「저장되었습니다」는 아닌데 저장쪽 말이긴 하다. 성공으로 보되 문구를 남긴다 —
-        # 나이스가 문구를 바꿨다면 여기 찍힌 글자로 SUCCESS_TEXT 를 고치면 된다.
-        print(f"  💾  저장된 것으로 봅니다 (결과창 문구가 예상과 다름: {body[:60]})")
-        return (SAVE_OK, "")
-    if not body:
-        # 창은 떴는데 글자를 못 읽었다. 성공이라고 말할 근거가 없다.
-        return (SAVE_UNSURE, "저장 결과창의 글자를 읽지 못했습니다 — 나이스에서 눈으로 확인하세요")
-    print(f"  ⚠️  저장 결과창이 예상과 다릅니다: {body[:80]}")
-    return (SAVE_UNSURE, f"저장 결과창: 「{body[:120]}」")
+    return _judge_save(body, told)
 
 
 # ============================================================
@@ -1011,56 +1165,32 @@ async def main():
                 if not await set_date_and_search(page, d):
                     print(f"  ⛔  {d.strftime('%m/%d')} 건너뜀 — 날짜를 못 맞췄습니다")
                     for task in tasks:
-                        failures.append({
-                            "date":   d,
-                            "kind":   FAILED,
-                            "number": task["number"],
-                            "name":   task["name"],
-                            "reason": "화면 날짜가 그날로 바뀌지 않아 입력하지 않았습니다",
-                        })
+                        failures.append(_failure(d, FAILED, task,
+                                                 "화면 날짜가 그날로 바뀌지 않아 입력하지 않았습니다"))
                     continue
                 day_cols = await read_day_columns(page)
                 last_p = day_last_period(day_cols)
                 if last_p:
                     print(f"    이 날 시간표: {last_p}교시까지")
-                for task in tasks:
-                    result = await enter_student(page, task, day_cols)
-                    if result:
-                        kind, reason = result
-                        failures.append({
-                            "date":   d,
-                            "kind":   kind,
-                            "number": task["number"],
-                            "name":   task["name"],
-                            "reason": reason,
-                        })
+                day_failures, can_save = await enter_day(page, d, tasks, day_cols)
+                failures.extend(day_failures)
+                if not can_save:
+                    continue
                 # 실패자가 있어도 저장은 그대로 한다 —
                 # 여기서 막으면 이미 들어간 학생들까지 같이 날아간다.
                 save_status, save_reason = await save_page(page)
                 if save_status != SAVE_OK:
                     # 저장을 확인하지 못했으면 그날 «전원» 이 불확실하다.
                     # 이미 개별 사유로 잡힌 학생은 빼고 나머지를 통째로 올린다.
-                    # 저장을 확인 못 했으면 «구분·종류는 저장됐다» 고 말할 수 없다.
-                    # 그날 ⚠️(교시만 빔) 로 잡아둔 학생도 ❓ 로 내린다.
-                    for f in failures:
-                        if f["date"] == d and f["kind"] == PARTIAL:
-                            f["kind"]   = UNSURE
-                            f["reason"] = f["reason"] + " · " + save_reason
                     # 이름만으로 세면 동명이인이 명단에서 빠진다 — 번호까지 같이 본다.
-                    already = {(f["number"], f["name"]) for f in failures if f["date"] == d}
+                    # 건(분류) 단위로 센다 — 같은 학생의 지각은 넣고 조퇴만 ❌ 인 경우, 학생 단위로 세면
+                    # 넣은 지각의 «저장 불확실» 이 명단에서 빠진다 (코덱스 검토 2026-09-11).
+                    already = {(f["number"], f["name"], f["label"]) for f in failures if f["date"] == d}
                     print(f"  ❓  {d.strftime('%m/%d')} 저장 확인 실패 — {save_reason}")
                     for task in tasks:
-                        key = (task["number"], task["name"])
-                        if key in already:
+                        if (task["number"], task["name"], task["label"]) in already:
                             continue
-                        already.add(key)   # 같은 학생이 그날 두 건이면 한 번만 올린다
-                        failures.append({
-                            "date":   d,
-                            "kind":   UNSURE,
-                            "number": task["number"],
-                            "name":   task["name"],
-                            "reason": save_reason,
-                        })
+                        failures.append(_failure(d, UNSURE, task, save_reason))
 
             exit_code = report_failures(failures)
         except Exception as e:
