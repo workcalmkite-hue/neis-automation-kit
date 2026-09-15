@@ -8,7 +8,17 @@
 """
 import json
 import os
+import sys
 from pathlib import Path
+
+# 윈도우 파워셸·클로드 앱 터미널은 기본 코드페이지가 cp949 라서, 한글·이모지를 찍으면
+# UnicodeEncodeError 로 스크립트가 죽는다 (2026-09-16 샌드박스 리허설에서 --dry-run 이 이것으로 실패).
+# 이 파일은 모든 실행 스크립트가 import 하므로 여기서 한 번만 출력 인코딩을 UTF-8 로 돌린다.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass   # 파이프로 묶였거나 reconfigure 가 없는 경우 — 그냥 넘어간다
 
 CONFIG_DIR   = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "neis-automation"
 CONFIG_FILE  = CONFIG_DIR / "teacher_config.json"
