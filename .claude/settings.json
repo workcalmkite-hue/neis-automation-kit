@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Bash(git clone *)",
+      "Bash(git pull *)",
+      "Bash(git status*)",
+      "Bash(git log *)",
+      "Bash(cd *)",
+      "Bash(python *)",
+      "Bash(py *)",
+      "PowerShell(git *)",
+      "PowerShell(python *)",
+      "PowerShell(py *)",
+      "PowerShell(winget install *)",
+      "PowerShell(Set-Location *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(Test-Path *)",
+      "PowerShell(.\\setup.ps1*)",
+      "PowerShell(.\\.venv\\Scripts\\python.exe *)",
+      "PowerShell(.\\.venv\\Scripts\\pip.exe *)"
+    ]
+  }
+}
