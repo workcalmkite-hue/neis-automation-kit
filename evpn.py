@@ -252,14 +252,22 @@ async def _launch(p):
 
 
 def _allow_protocol() -> None:
-    """예전 판이 프로필에 심어 둔 axvpn:// 자동 허용·차단 값을 지운다 (아래 _block_axvpn 으로 대신한다)."""
+    """예전 판이 프로필에 심어 둔 axvpn:// 자동 허용·차단 값을 지운다 (아래 _block_axvpn 으로 대신한다).
+
+    크롬 «비밀번호를 저장하시겠습니까?» 풍선도 여기서 끈다 — 포털 로그인 뒤 화면을 가렸다
+    (2026-09-18 샌드박스 Sonnet 실측). 첫 실행이라 파일이 없으면 이 두 값만 넣어 만든다.
+    """
     prefs = PROFILE_DIR / "Default" / "Preferences"
-    if not prefs.exists():
-        return
-    try:
-        data = json.loads(prefs.read_text(encoding="utf-8"))
-    except Exception:
-        return
+    if prefs.exists():
+        try:
+            data = json.loads(prefs.read_text(encoding="utf-8"))
+        except Exception:
+            return
+    else:
+        prefs.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+    data["credentials_enable_service"] = False
+    data.setdefault("profile", {})["password_manager_enabled"] = False
     ph = data.get("protocol_handler", {})
     ph.get("excluded_schemes", {}).pop("axvpn", None)
     for v in ph.get("allowed_origin_protocol_pairs", {}).values():

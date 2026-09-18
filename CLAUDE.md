@@ -157,15 +157,19 @@ docs/                선생님용 안내 문서
 선생님이 학교 밖이면(나이스·업무포털이 안 열리면) 업무 스크립트를 **그냥 돌리지 않는다.**
 
 ```
-python run_vpn.py -- python main.py 2026-09-14
-python run_vpn.py --minutes 8 -- python edufine_inspect.py
+.\.venv\Scripts\python.exe -X utf8 run_vpn.py -- python main.py 2026-09-14
+.\.venv\Scripts\python.exe -X utf8 run_vpn.py --minutes 8 -- python edufine_inspect.py
 ```
 
+- **맨 앞은 반드시 `.venv` 파이썬.** 그냥 `python run_vpn.py` 로 부르면 작업 스크립트가 라이브러리를 못 찾고
+  죽는다 (2026-09-18 샌드박스 실측 — 연결·끊기는 됐는데 작업만 실패). `--` 뒤의 `python` 은 그대로 두면 된다
 - `run_vpn.py` 가 연결 → 작업 → 끊기를 **한 번에** 한다. 일부 지역(부산·전남·강원·경기 등)은 VPN 중 인터넷이
   막혀 **너(클로드)도 응답을 못 받는다** — 그래서 «연결해 두고 대화하며 작업» 하지 않는다
 - Bash/PowerShell 도구의 timeout 은 **600000(10분)** 으로 준다. 마지막 줄 `RESULT_JSON` 으로 성공을 판단한다
-- 처음이면 `python evpn.py` 로 상태를 본다. 없는 것 순서대로: AXGATE 설치(포털 [다운로드]) →
-  `python evpn.py setup --user <EVPN 아이디>` → `python evpn.py install`(선생님이 «[예]» 한 번)
+- 처음이면 `.\.venv\Scripts\python.exe -X utf8 evpn.py` 로 상태를 본다. 없는 것 순서대로: AXGATE 설치(포털 [다운로드]) →
+  `evpn.py setup --user <EVPN 아이디>` → `evpn.py install`(선생님이 «[예]» 한 번). 셋 다 `.venv` 파이썬으로
+- AXGATE 가 깔렸는지 보려고 **C:\ 전체를 뒤지거나 `Win32_Product` 를 부르지 않는다** — 몇 분씩 걸린다.
+  `evpn.py` 상태 한 번이면 설치·도우미·연결이 다 나온다
 - AXGATE 의 2차 인증·«이미 접속» 창은 도우미(예약 작업)가 처리한다. **그 창을 네가 누르려고 하지 않는다**
 - 끊기지 않았으면 선생님께 바탕화면 **«VPN 끊기»** 를 더블클릭하시라고 안내한다
 - 서울 말고는 시험하지 않았다. 다른 지역이면 «아직 시험 안 된 지역» 이라고 먼저 말한다

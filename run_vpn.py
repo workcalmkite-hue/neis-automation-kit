@@ -79,8 +79,11 @@ def main() -> int:
     if not cmd:
         print("사용법: python run_vpn.py -- python main.py 2026-09-14")
         return 2
-    if cmd[0] in ("python", "py"):
-        cmd[0] = sys.executable                   # 가상환경 파이썬을 그대로 쓴다
+    if cmd[0] in ("python", "py", "python.exe"):
+        # 키트 가상환경 파이썬을 쓴다. run_vpn 자체를 시스템 파이썬으로 부르면 sys.executable 도
+        # 시스템 것이라, 작업 스크립트가 라이브러리를 못 찾고 죽었다 (2026-09-18 샌드박스 Sonnet 실측)
+        venv_py = Path(__file__).resolve().parent / ".venv" / "Scripts" / "python.exe"
+        cmd[0] = str(venv_py) if venv_py.exists() else sys.executable
 
     already = evpn.tap_status() == "Up"
     if evpn.tap_status() == "unknown":
@@ -103,7 +106,7 @@ def main() -> int:
             STATE.write_text(json.dumps({"we_connected": True, "finished": False}), encoding="utf-8")
             result["connected"] = evpn.connect()
         if result["connected"]:
-            print(f"▶️  작업 시작 (최대 {a.minutes:g}분): {' '.join(cmd[1:]) if cmd[0] == sys.executable else ' '.join(cmd)}",
+            print(f"▶️  작업 시작 (최대 {a.minutes:g}분): {' '.join(cmd[1:]) if cmd[0].lower().endswith('python.exe') else ' '.join(cmd)}",
                   flush=True)
             try:
                 r = subprocess.run(cmd, timeout=a.minutes * 60, stdin=subprocess.DEVNULL)
