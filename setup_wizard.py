@@ -7,7 +7,10 @@
 설정은 저장소가 아니라 %LOCALAPPDATA%\neis-automation 에 저장된다.
 """
 import json
+import os
+import subprocess
 import sys
+import time
 from getpass import getpass
 from pathlib import Path
 
@@ -96,6 +99,92 @@ def ensure_calendars(creds) -> dict:
     return calendars
 
 
+# 지역 이름으로 답해도 된다 — 나이스 주소 앞글자 = 교육청 코드 (17개 모두 DNS 확인, 2026-09-18)
+REGION_CODES = {
+    "서울": "sen", "부산": "pen", "대구": "dge", "인천": "ice", "광주": "gen",
+    "대전": "dje", "울산": "use", "세종": "sje", "경기": "goe", "강원": "gwe",
+    "충북": "cbe", "충남": "cne", "전북": "jbe", "전남": "jne", "경북": "gbe",
+    "경남": "gne", "제주": "jje",
+}
+
+
+def to_neis_url(answer: str) -> str:
+    """「경기」처럼 지역 이름으로 답하면 그 지역 나이스 주소로 바꾼다. 주소면 그대로."""
+    a = answer.strip()
+    for name, code in REGION_CODES.items():
+        if a in (name, name + "도", name + "시", name + "특별시", name + "광역시"):
+            return f"https://{code}.neis.go.kr/jsp/main.jsp"
+    return a
+
+
+def gpki_names() -> list:
+    r"""C:\GPKI\Certificate\class2 의 파일 이름에서 교육행정 인증서 이름을 뽑는다.
+    `123홍길동456_sig.cer` → 홍길동. 폴더가 없으면 빈 목록 (그 PC 에 인증서가 없는 것)."""
+    import re
+    folder = Path(r"C:\GPKI\Certificate\class2")
+    names = []
+    if folder.is_dir():
+        for f in sorted(folder.glob("*_sig.cer")):
+            m = re.search(r"[가-힣]+", f.name)
+            if m and m.group(0) not in names:
+                names.append(m.group(0))
+    return names
+
+
+def has_keyboard() -> bool:
+    """사람이 칠 수 있는 진짜 콘솔인가. ★ isatty() 는 못 믿는다 — 윈도우에서는 입력이
+    NUL 장치로 막혀 있어도 True 가 나온다 (2026-09-18 실측). 콘솔 모드를 직접 물어본다."""
+    if os.name != "nt":
+        return sys.stdin is not None and sys.stdin.isatty()
+    try:
+        import ctypes
+        import msvcrt
+        h = msvcrt.get_osfhandle(sys.stdin.fileno())
+        mode = ctypes.c_uint()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(h, ctypes.byref(mode)))
+    except Exception:
+        return False
+
+
+def relaunch_in_new_window() -> int:
+    """클로드가 돌리면 키보드 입력을 받을 수 없다 — 선생님이 칠 수 있게 «새 창»으로 띄운다.
+
+    선생님께 «검은 창을 여세요»라고 하지 않으려고 만든 길이다. 새 창이 뜨고, 거기서 답하고,
+    끝나면 창이 닫힌다. 이 쪽(클로드가 보는 쪽)은 창이 닫힐 때까지 기다렸다가 결과만 알려준다.
+    비밀번호는 새 창에서만 받으므로 클로드 대화에 남지 않는다.
+    """
+    env = dict(os.environ, NEIS_WIZARD_WINDOW="1")
+    cmd = [sys.executable, "-X", "utf8", str(Path(__file__).resolve())]
+    print("🪟  설정 창을 새로 띄웁니다. 작업표시줄에 새로 뜬 검은 창에서 질문에 답해 주세요.")
+    print("   (인증서 비밀번호도 그 창에만 칩니다. 이 대화에는 남지 않습니다)", flush=True)
+    # ★ 입출력을 부모(클로드 쪽)에서 물려받지 않게 끊는다 — 물려받으면 새 창이 떠도
+    #   질문이 클로드 쪽으로 가고 입력은 빈 채로 끝난다 (2026-09-18 실측). 새 창이 자기 콘솔을 연다.
+    proc = subprocess.Popen(cmd, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, close_fds=True)
+    start = time.time()
+    while proc.poll() is None:
+        time.sleep(2)
+        if time.time() - start > 15 * 60:
+            print("⏱  15분이 지나도 창이 안 닫혔습니다. 창을 확인해 주세요.")
+            return 1
+    try:
+        cfg = teacher_config.load_config()
+    except Exception:
+        print("❌  설정이 저장되지 않았습니다 (창을 중간에 닫으셨거나 오류가 났습니다).")
+        return 1
+    name = cfg.get("cert_name", "")
+    saved = bool(name and keyring.get_password(teacher_config.KEYRING_SERVICE, name))
+    print("\n결과 (비밀번호·연락처는 가려서 보여줍니다)")
+    print(f"   나이스 주소       {cfg.get('neis_url', '')}")
+    print(f"   학년·반           {cfg.get('grade') or '-'} / {cfg.get('class') or '-'}")
+    print(f"   인증서 이름       {name[:1] + '*' * max(len(name) - 1, 0) if name else '(없음)'}")
+    print(f"   인증서 비밀번호   {'저장됨' if saved else '❌ 없음'}")
+    print(f"   복무 연락처·결재선 {'있음' if cfg.get('contact') else '없음'} / {'있음' if cfg.get('approval_line') else '없음'}")
+    print(f"   출결 캘린더       {len(cfg.get('calendars') or {})}개")
+    return 0 if (name and saved and proc.returncode == 0) else 1
+
+
 def ask(label: str, default: str = "", required: bool = True) -> str:
     """기본값이 있으면 보여주고, 그냥 Enter 치면 기본값을 쓴다."""
     suffix = f" [{default}]" if default else ""
@@ -119,8 +208,8 @@ def main():
 
     print("\n── 1. 나이스 접속 주소 ──")
     print("   브라우저로 본인 지역 나이스에 접속한 뒤 주소창을 그대로 붙여넣으세요.")
-    print("   서울이면 기본값 그대로 Enter.")
-    neis_url = ask("나이스 주소", old.get("neis_url", teacher_config.DEFAULTS["neis_url"]))
+    print("   서울이면 기본값 그대로 Enter. 지역 이름(예: 경기)만 쳐도 됩니다.")
+    neis_url = to_neis_url(ask("나이스 주소", old.get("neis_url", teacher_config.DEFAULTS["neis_url"])))
 
     print("\n── 2. 담임 학급 (담임이 아니면 그냥 Enter) ──")
     print("   학생 출결 자동화에만 쓰는 값입니다.")
@@ -128,10 +217,16 @@ def main():
     grade  = ask("학년 (예: 1)", old.get("grade", ""), required=False)
     class_ = ask("반 (예: 7)", old.get("class", ""), required=False)
 
-    print("\n── 3. 공동인증서 ──")
-    print("   나이스 '인증서 로그인' 창에 뜨는 이름을 그대로 적으세요.")
-    print("   (확인하는 법은 docs/01_처음-준비.md 의 '인증서 이름 확인' 참고)")
-    cert_name = ask("인증서 이름", old.get("cert_name", ""))
+    print("\n── 3. 교육행정 인증서 ──")
+    found = gpki_names()
+    if found:
+        print(f"   이 컴퓨터에서 찾은 인증서 이름: {', '.join(found)}")
+        print("   맞으면 그냥 Enter. 여러 개면 쓰실 이름을 그대로 치세요.")
+    else:
+        print(r"   ⚠️  C:\GPKI\Certificate\class2 에 교육행정 인증서가 없습니다.")
+        print("   평소 업무포털이 되는 컴퓨터인지, USB 인증서면 꽂혀 있는지 확인해 주세요.")
+        print("   나이스 '인증서 로그인' 창에 뜨는 이름을 알면 그대로 적어도 됩니다.")
+    cert_name = ask("인증서 이름", old.get("cert_name", "") or (found[0] if found else ""))
     cert_password = getpass("인증서 비밀번호 (화면에 표시되지 않습니다, 그대로 두려면 Enter): ")
     if not cert_password and not keyring.get_password(teacher_config.KEYRING_SERVICE, cert_name):
         print("  ⚠️  저장된 비밀번호가 없습니다. 다시 입력해주세요.")
@@ -169,6 +264,7 @@ def main():
         keyring.set_password(teacher_config.KEYRING_SERVICE, cert_name, cert_password)
 
     teacher_config.save_config({
+        **old,                              # 에듀파인 쪽이 넣은 값(region 등)을 지우지 않는다
         "neis_url": neis_url,
         "grade": grade,
         "class": class_,
@@ -188,4 +284,26 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # 클로드가 돌리면 입력창이 없다 → 새 창으로 띄운다 (선생님이 직접 검은 창을 열 필요가 없다)
+    if not os.environ.get("NEIS_WIZARD_WINDOW") and os.name == "nt" and not has_keyboard():
+        sys.exit(relaunch_in_new_window())
+    if os.environ.get("NEIS_WIZARD_WINDOW"):
+        # 새 창 쪽 — 이 창의 키보드·화면에 직접 붙는다
+        sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+        sys.stderr = sys.stdout
+    try:
+        main()
+        code = 0
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+    except Exception as e:
+        print(f"\n❌  오류: {e}")
+        code = 1
+    if os.environ.get("NEIS_WIZARD_WINDOW"):
+        msg = "창을 닫으려면 Enter 를 누르세요..." if code else "✅ 끝났습니다. Enter 를 누르면 창이 닫힙니다..."
+        try:
+            input("\n" + msg)
+        except EOFError:
+            pass
+    sys.exit(code)

@@ -20,7 +20,8 @@
       "PowerShell(Get-ChildItem *)",
       "PowerShell(Get-Content *)",
       "PowerShell(Test-Path *)",
-      "PowerShell(.\\setup.ps1*)",
+      "PowerShell(.\\setup.ps1)",
+      "PowerShell(.\\setup.ps1 *)",
       "PowerShell(.\\.venv\\Scripts\\python.exe *)",
       "PowerShell(.\\.venv\\Scripts\\pip.exe *)"
     ]
