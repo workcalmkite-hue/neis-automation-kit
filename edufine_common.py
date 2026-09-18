@@ -133,7 +133,33 @@ def launch(p):
     grant_local_network(ctx)             # ★ 페이지를 열기 «전»에
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     page.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+    page.on("dialog", on_dialog)
+    ctx.on("page", lambda pg: pg.on("dialog", on_dialog))    # 팝업 창에서 뜨는 확인창도
     return ctx, page
+
+
+def is_ip_takeover(msg):
+    """«IP(…)에서 접속 중입니다. 기존 사용자를 종료 후 계속 진행하시겠습니까?» 창인가."""
+    return "접속 중입니다" in msg and "기존 사용자를 종료" in msg
+
+
+def on_dialog(d):
+    """브라우저 확인창 처리 — «다른 IP 에서 접속 중» 창만 [확인], 나머지는 모두 «아니오».
+
+    접속 IP 가 바뀌면(학교↔집·EVPN) 에듀파인이 이 창을 띄운다. «아니오»로 닫으면
+    «중복 로그인 안내» 페이지로 빠져 메뉴를 못 연다 (2026-09-18 학교 밖 EVPN 실측).
+    [확인]하면 다른 곳(학교 PC 등)에 켜 둔 에듀파인은 끊긴다 — 2026-09-11 사용자 결정.
+    """
+    msg = " ".join((d.message or "").split())
+    try:
+        if is_ip_takeover(msg):
+            log("  💬 다른 곳의 에듀파인 접속을 끊고 들어갑니다: %s" % msg[:120])
+            d.accept()
+        else:
+            log("  💬 확인창을 «아니오»로 닫았습니다: %s" % msg[:120])
+            d.dismiss()
+    except Exception:
+        pass                         # 이미 닫힌 창
 
 
 def grant_local_network(ctx):

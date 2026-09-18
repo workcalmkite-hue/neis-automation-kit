@@ -462,8 +462,7 @@ def main():
     result = {"할일": a.할일}
     code = 0
     with sync_playwright() as p:
-        ctx, page = E.launch(p)
-        page.on("dialog", lambda d: d.dismiss())     # 브라우저 확인창은 모두 «아니오»
+        ctx, page = E.launch(p)      # 확인창 처리는 E.on_dialog («다른 IP 접속 중» 만 [확인])
         try:
             E.login(page, name, pw)
             if a.할일 == "열기":
