@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-"""K-에듀파인 지출품의 — 목록 열기 · 지난 품의 읽기 · 화면 채우기 · (말할 때만) 저장.
+"""K-에듀파인 지출품의 — 목록 열기 · 지난 품의 읽기 · 화면 채우기 · 저장 · 결재요청(결재올림)까지.
 
   .\\.venv\\Scripts\\python.exe -X utf8 edufine_punui.py 열기                 로그인해서 품의목록까지 (3단계)
   .\\.venv\\Scripts\\python.exe -X utf8 edufine_punui.py 읽기 --건수 5        지난 품의 5건 읽기 (4단계, 읽기만)
   .\\.venv\\Scripts\\python.exe -X utf8 edufine_punui.py 채우기 품의.json     [신규] 화면 채우고 멈춤 (6단계, 저장 안 함)
-  .\\.venv\\Scripts\\python.exe -X utf8 edufine_punui.py 채우기 품의.json --저장   채우고 저장까지 (7단계)
+  .\\.venv\\Scripts\\python.exe -X utf8 edufine_punui.py 채우기 품의.json --저장 --결재요청   채우고 저장하고 올리기까지 (7단계)
 
-★★ [결재요청] 을 누르는 코드는 이 파일에 «없다». 한 번 올리면 기안자가 되돌릴 수 없다(2026-09-17 실측).
-   결재요청은 선생님이 화면을 보고 직접 누른다. 이 파일에 그 기능을 넣지 마라.
-★  --저장 은 선생님이 제목·개요·예산·품목·합계를 보고 «저장해» 라고 한 뒤에만 붙인다.
-★  읽기 는 [신규]·[저장]·[삭제] 를 하나도 누르지 않는다.
+★  --결재요청 은 [결재요청] → 기안기 창(과제카드·공개여부·결재선) → [결재올림] 까지 묻지 않고 간다 (2026-09-21 방침).
+   한 번 올리면 기안자가 되돌릴 수 없다 — 결재자가 반려해야 한다. 잘못 올라가면 선생님이 결재자께 반려를 부탁한다.
+   결과를 모르면(«정상적으로 처리» 를 못 봤으면) 절대 다시 돌리지 않는다 — 두 번 올라간다.
+★  읽기 는 [신규]·[저장]·[삭제] 를 하나도 누르지 않는다. [삭제]·[결재취소요청] 은 어떤 경우에도 안 누른다.
 
 품의.json 모양 (이 폴더에 만든다):
   {
@@ -19,10 +19,16 @@
     "품목": [
       {"내용": "우드락 5T", "규격": "610x910", "수량": 10, "단가": 3050},
       {"내용": "배송비", "수량": 1, "단가": 3000}
-    ]
+    ],
+    "과제카드": "생활교양교과교육활동",
+    "공개여부": "공개",
+    "결재선": "기술수업 (30만원 미만)"
   }
   - "예산" 은 예산선택 창의 줄 글자 중 «그 줄에만 있는» 한 부분 (세부항목 이름 등).
     여러 줄에 걸리면 채우지 않고 후보를 보여 주며 멈춘다
+  - "과제카드"·"공개여부"·"결재선" 은 --결재요청 때만 쓴다 (기안기 창에 비어서 오는 필수칸).
+    과제카드 = 과제카드선택 창 목록 글자 일부 · 공개여부 = "공개" 또는 "비공개" ·
+    결재선 = 기안기 «나의결재선» 에 저장해 둔 이름 그대로 (없으면 목록을 보여 주고 멈춘다)
   - 결과 캡처는 이 폴더의 캡처/ 에 남는다 (gitignore). 마지막 줄에 RESULT_JSON= 을 찍는다
 """
 import argparse
@@ -36,7 +42,8 @@ import edufine_common as E
 from playwright.sync_api import sync_playwright
 
 MENU = "품의목록"
-FORBIDDEN = ("결재요청", "삭제", "결재취소요청")          # 이 파일은 절대 안 누른다
+FORBIDDEN = ("결재요청", "삭제", "결재취소요청")          # click_safe 로는 절대 안 누른다
+# [결재요청] 은 request_approval() 만 누른다 — 같은 이름이 둘이라 «보이는 쪽» 을 골라야 해서 (2026-09-17 함정)
 
 # ── 화면 읽기용 JS ──────────────────────────────────────────────
 JS_GRIDS = r"""
@@ -332,7 +339,7 @@ def money(n):
     return "{:,}".format(n)
 
 
-def load_plan(path):
+def load_plan(path, request=False):
     p = Path(path)
     if not p.is_absolute():
         p = E.HERE / p
@@ -346,10 +353,16 @@ def load_plan(path):
         if not it.get("내용") or not isinstance(it.get("수량"), int) or not isinstance(it.get("단가"), int):
             raise SystemExit("품목 %d번에 내용·수량·단가(숫자)가 다 있어야 합니다: %s" % (i, it))
     d["합계"] = sum(it["수량"] * it["단가"] for it in d["품목"])
+    if request:                                  # 로그인 «전»에 막는다 — 반쯤 올리다 멈추지 않게
+        for k in ("과제카드", "공개여부", "결재선"):
+            if not d.get(k):
+                raise SystemExit("--결재요청 에는 품의.json 의 '%s' 가 있어야 합니다. 선생님께 물어보세요." % k)
+        if d["공개여부"] not in ("공개", "비공개"):
+            raise SystemExit("공개여부는 \"공개\" 또는 \"비공개\" 만 됩니다 (부분공개는 기안기에서 선생님이 직접).")
     return d
 
 
-def cmd_fill(page, plan, save):
+def cmd_fill(page, plan, save, request=False):
     E.log("\n채울 내용 — 제목 %r / 예산 %r / 품목 %d줄 / 합계 %s원"
           % (plan["제목"], plan["예산"], len(plan["품목"]), money(plan["합계"])))
     open_list(page)
@@ -454,7 +467,7 @@ def cmd_fill(page, plan, save):
         E.log("\n⛔ 금액이 다르거나 빈 칸이 있어 저장하지 않습니다.")
         return res
 
-    E.log("\n⚠️  [저장] 을 누릅니다 (선생님 지시)")
+    E.log("\n⚠️  [저장] 을 누릅니다")
     E.click_btn(page, "저장")
     page.wait_for_timeout(3000)
     mt = E.modal_text(page) or ""
@@ -479,8 +492,89 @@ def cmd_fill(page, plan, save):
     E.log("품의번호: %s" % (num or "(못 읽음 — 품의목록에서 확인하세요)"))
     E.shot(page, "품의_저장뒤.png")
     res.update({"저장": "완료" if "완료" in done else "모름", "품의번호": num})
-    E.log("\n★ 결재요청은 누르지 않았습니다. 선생님이 화면에서 확인하고 직접 누르세요.")
+    if not request:
+        E.log("\n★ 결재요청은 누르지 않았습니다.")
+        return res
+    if res["저장"] != "완료" or not num:
+        E.log("\n⛔ 저장이 확실하지 않아 결재요청하지 않습니다.")
+        return res
+    res.update(request_approval(page, plan, num))
     return res
+
+
+# ── 결재요청 ────────────────────────────────────────────────────
+JS_BTNS = r"""
+(name) => [...document.querySelectorAll('div[id$=":icontext"]')].filter(e => (e.innerText || '').trim() === name).map(e => {
+  const r = e.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+  const inView = r.width > 0 && x > 0 && y > 0 && x < innerWidth && y < innerHeight;
+  const t = inView ? document.elementFromPoint(x, y) : null, base = e.id.replace(/:icontext$/, '');
+  return {x: x, y: y, color: getComputedStyle(e).color,
+          hit: !!t && (t.id === e.id || (t.id || '').indexOf(base) === 0)};
+})
+"""
+ACTIVE = "rgb(255, 255, 255)"      # 회색(153,153,153)이면 비활성 — 클래스는 둘 다 같아서 글자색으로 본다 (2026-09-21)
+
+
+def visible_btn(page, name):
+    """같은 이름 버튼이 위·아래 둘이다. 화면에 보이고 맨 위에 있는 것 하나만 (2026-09-17 함정)."""
+    for _ in range(6):
+        hits = [b for b in page.evaluate(JS_BTNS, name) if b["hit"]]
+        if hits:
+            return hits[0]
+        page.mouse.move(700, 400)                # 화면이 굴러 있으면 둘 다 안 보인다 — 위로 굴린다
+        page.mouse.wheel(0, -600)
+        page.wait_for_timeout(400)
+    return None
+
+
+def list_status(page, num):
+    open_list(page)
+    gid = grid(page, "grdMain")
+    for _ in range(6):
+        for r in page.evaluate(JS_ROWS, gid) if gid else []:
+            if r["text"].startswith(num + " "):
+                return r["text"].split(" | ")[7] if r["text"].count(" | ") >= 7 else r["text"]
+        page.wait_for_timeout(800)
+    return ""
+
+
+def request_approval(page, plan, num):
+    import edufine_gian as G                     # 기안기(네이티브 창) 부품 — 결재요청 때만 필요
+    if G.gian_hwnd() or G.windows(G.IE_DLG, None, G.wxs_pids()):
+        E.log("⛔ 기안기 창이 이미 떠 있습니다. 그 창을 마무리하거나 닫은 뒤 다시 해 주세요.")
+        return {"결재요청": "멈춤", "이유": "기안기 창이 이미 열려 있음"}
+    no = page.locator('input[id$="form.edtCnsulNoRe:input"]')
+    if not no.count() or no.first.input_value() != num:
+        E.log("⛔ 화면의 품의번호가 %s 가 아닙니다 — 누르지 않습니다." % num)
+        return {"결재요청": "멈춤", "이유": "품의번호 불일치"}
+    b = visible_btn(page, "결재요청")
+    if not b or b["color"] != ACTIVE:
+        E.shot(page, "품의_결재요청단추.png")
+        E.log("⛔ 누를 수 있는 [결재요청] 이 화면에 없습니다.")
+        return {"결재요청": "멈춤", "이유": "결재요청 단추 없음/비활성"}
+    E.log("\n⚠️  [결재요청] 을 누릅니다 (품의번호 %s)" % num)
+    nexa_click(page, b["x"], b["y"])
+    box = E.wait_modal(page, "결재요청 하시겠습니까", 8000)
+    if not box:
+        E.shot(page, "품의_결재요청물음.png")
+        E.log("⛔ «결재요청 하시겠습니까?» 창이 안 떴습니다: %s" % (E.modal_text(page) or "(창 없음)"))
+        return {"결재요청": "멈춤", "이유": "확인창 없음"}
+    ok = page.locator('%s div[id$="sanctnRequst.form.btnOk:icontext"]' % E.OVERLAY)
+    if ok.count() != 1:
+        E.log("⛔ 확인창의 [확인] 을 못 찾았습니다 — 누르지 않습니다.")
+        return {"결재요청": "멈춤", "이유": "확인 단추 없음"}
+    ok.click(timeout=8000)
+    try:
+        route = G.fill_and_submit(plan)
+    except G.Stop as e:
+        E.log("⛔ %s" % e)
+        E.log("   기안기 창은 그대로 두었습니다. 선생님이 창에서 마저 채우고 [결재올림] 하시거나 닫으시면 됩니다.")
+        return {"결재요청": "멈춤", "이유": str(e)[:200]}
+    st = list_status(page, num)
+    E.log("\n품의목록 상태: %s" % (st or "(못 읽음)"))
+    ok_ = "결재요청" in st
+    E.log("✅ 결재요청까지 올라갔습니다." if ok_ else "⚠️ 기안기는 «정상 처리» 였는데 목록 상태가 예상과 다릅니다. 다시 돌리지 말고 목록을 봐 주세요.")
+    return {"결재요청": "완료" if ok_ else "모름", "상태": st, **route}
 
 
 def main():
@@ -489,9 +583,14 @@ def main():
     ap.add_argument("파일", nargs="?", help="채우기: 품의.json")
     ap.add_argument("--건수", type=int, default=5)
     ap.add_argument("--시작일", help="읽기 조회 시작일 YYYY-MM-DD (기본: 올해 회계연도 3월 1일)")
-    ap.add_argument("--저장", action="store_true", help="채운 뒤 저장까지 (선생님이 말할 때만)")
+    ap.add_argument("--저장", action="store_true", help="채운 뒤 저장까지")
+    ap.add_argument("--결재요청", action="store_true", help="저장 뒤 [결재요청] → 기안기 [결재올림] 까지 (--저장 필요)")
     a = ap.parse_args()
-    plan = load_plan(a.파일 or "품의.json") if a.할일 == "채우기" else None
+    if a.결재요청 and not a.저장:
+        raise SystemExit("--결재요청 은 --저장 과 같이 씁니다.")
+    plan = load_plan(a.파일 or "품의.json", a.결재요청) if a.할일 == "채우기" else None
+    if a.결재요청:
+        import edufine_gian                      # noqa: F401 — 부품이 없으면 저장하기 «전»에 멈춘다
     name, pw = E.creds()
 
     result = {"할일": a.할일}
@@ -509,8 +608,9 @@ def main():
                 frm = (a.시작일 or "").replace("-", "") or school_year_start()
                 result.update(cmd_read(page, a.건수, frm))
             else:
-                result.update(cmd_fill(page, plan, a.저장))
-                if not result.get("채움") or not result.get("일치", True):
+                result.update(cmd_fill(page, plan, a.저장, a.결재요청))
+                if (not result.get("채움") or not result.get("일치", True)
+                        or (a.결재요청 and result.get("결재요청") != "완료")):
                     code = 1
         except (Exception, SystemExit) as e:
             result["오류"] = str(e)[:300]

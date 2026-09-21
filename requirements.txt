@@ -6,3 +6,5 @@ keyring>=25.0.0
 # mcp 2.x 는 mcp_server.py 가 쓰는 mcp.server.fastmcp(FastMCP 1.x API)를 없앴다.
 # 그냥 mcp>=1.2.0 으로 두면 새로 까는 사람은 2.x 가 깔려 MCP 서버가 뜨지 않는다 (2026-09-16 실측).
 mcp>=1.2.0,<2
+pywinauto>=0.6.8          # 에듀파인 기안기(네이티브 창) — 품의 결재요청
+pillow>=10.0.0            # 기안기 창 캡처 (없어도 동작, 캡처만 빠진다)
