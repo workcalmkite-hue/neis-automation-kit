@@ -100,7 +100,7 @@ cfg = teacher_config.load_config()   # DEFAULTS가 병합된 dict를 준다
 
 ```
 main.py              학생 출결 자동 입력 (구글 캘린더 → 나이스)
-main_bokmu.py        본인 복무(조퇴·외출·지각) 신청·상신
+main_bokmu.py        본인 복무(조퇴·외출·지각 / 병조퇴·병외출·병지각) 신청·상신
 verify_attendance.py 캘린더 vs 나이스 대조 (읽기 전용)
 setup_wizard.py      최초 설정 마법사
 fix_cert.py          인증서 이름·비밀번호만 다시 설정

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """나이스 복무(근무상황) 자동 상신 스크립트.
 
-조퇴/외출/지각을 개인근무상황관리 화면에서 자동으로 신청하고 승인요청(상신)까지 완료한다.
+조퇴/외출/지각(연가)과 병조퇴/병외출/병지각(병가, 질병)을 개인근무상황관리 화면에서
+자동으로 신청하고 승인요청(상신)까지 완료한다.
 로그인은 main.py의 인증서 자동 로그인 로직을 그대로 재사용한다.
 
 사용 예:
     python main_bokmu.py --type 조퇴 --date 2026-07-10 --start 15:00 --end 16:20 --reason "개인 사유"
     python main_bokmu.py --type 외출 --date 2026-07-10 --start 10:00 --end 11:00 --reason "은행 업무" --dry-run
+    python main_bokmu.py --type 병조퇴 --date 2026-09-21 --start 15:50 --end 16:20 --reason "감기(OO내과 진료)"
 """
 import argparse
 import asyncio
@@ -20,7 +22,14 @@ from playwright.async_api import async_playwright, Page
 import teacher_config
 import main as neis  # 로그인/알림팝업 로직 재사용
 
-WORK_SITTN_TYPES = {"지각", "조퇴", "외출"}
+# 근무상황소분류 → 대분류. 질병(병원·아픔)이면 병가 쪽, 개인 사정이면 연가 쪽이다.
+# 나이스 대분류에 «조퇴» 라는 항목은 없다 — 항상 연가 또는 병가 아래 소분류로 들어간다.
+SITTN_PARENT = {
+    "지각": "연가", "조퇴": "연가", "외출": "연가",
+    "병지각": "병가", "병조퇴": "병가", "병외출": "병가",
+}
+WORK_SITTN_TYPES = set(SITTN_PARENT)
+CLOSE_CONFIRM_TEXT = "윈도우창을 닫으시겠습니까?"
 MINUTE_STEP = 5  # 시작/종료 '분' 콤보박스는 5분 단위로만 선택 가능
 
 
@@ -33,9 +42,27 @@ def round_to_step(hm: str, step: int = MINUTE_STEP) -> str:
     return f"{h:02d}:{m:02d}"
 
 
+async def dismiss_close_confirm(page: Page) -> bool:
+    """«윈도우창을 닫으시겠습니까?» 확인창이 떠 있으면 «취소» 를 누른다.
+
+    신청창 안에서 Escape 가 눌리면 이 확인창이 떠 화면 전체를 막고, 그 뒤 모든 클릭이
+    30초씩 timeout 난다 (2026-09-21 실측). 이 도구는 Escape 를 쓰지 않지만, 선생님이
+    도는 중에 키를 눌렀을 때도 멈추지 않도록 콤보를 열 때마다 한 번 본다.
+    """
+    msg = page.get_by_text(CLOSE_CONFIRM_TEXT, exact=True)
+    if await msg.count() == 0:
+        return False
+    box = msg.last.locator('xpath=ancestor::div[@role="dialog" or @role="alertdialog"][1]')
+    scope = box if await box.count() else page
+    await scope.get_by_text("취소", exact=True).last.click(timeout=5000)
+    await page.wait_for_timeout(600)
+    return True
+
+
 async def select_combo_option(page: Page, combo, option_text: str, max_scroll: int = 8):
     """콤보박스(cl-text[role=combobox])를 열고 옵션(cl-combobox-item[role=option])을 선택한다.
     목록이 가상 스크롤이라 원하는 값이 안 보이면 popup 안에서 스크롤하며 찾는다."""
+    await dismiss_close_confirm(page)
     await combo.scroll_into_view_if_needed()
     await page.wait_for_timeout(200)
     await combo.click(timeout=5000, force=True)
@@ -111,7 +138,13 @@ async def fill_work_sittn_form(
     sh, sm = start_hm.split(":")
     eh, em = end_hm.split(":")
 
-    # 1) 근무상황소분류 (근무상황대분류는 기본값 '연가'로 이미 세팅되어 있음)
+    # 1) 근무상황대분류 → 소분류. 대분류 기본값은 '연가'라 병가 쪽일 때만 바꾼다.
+    #    대분류를 바꾸면 소분류 목록과 시각 기본값이 다시 그려지므로 잠깐 기다린다.
+    parent = SITTN_PARENT[sittn_type]
+    if parent != "연가":
+        main_combo = dialog.locator('[role="combobox"][aria-label^="근무상황대분류"]').first
+        await select_combo_option(page, main_combo, parent)
+        await page.wait_for_timeout(1200)
     sub_combo = dialog.locator('[role="combobox"][aria-label^="근무상황소분류"]').first
     await select_combo_option(page, sub_combo, sittn_type)
 
@@ -479,7 +512,7 @@ async def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description="나이스 복무(근무상황) 자동 상신")
-    parser.add_argument("--type", required=True, choices=sorted(WORK_SITTN_TYPES), help="지각/조퇴/외출")
+    parser.add_argument("--type", required=True, choices=sorted(WORK_SITTN_TYPES), help="조퇴·외출·지각(연가) / 병조퇴·병외출·병지각(병가, 질병)")
     parser.add_argument("--date", required=True, help="YYYY-MM-DD")
     parser.add_argument("--start", required=True, help="시작 시각 HH:MM")
     parser.add_argument("--end", required=True, help="종료 시각 HH:MM")
