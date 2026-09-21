@@ -103,6 +103,22 @@ JS_ROWHITS = r"""
   })
 """
 
+JS_CBPLACE = r"""
+(a) => {
+  const row = document.getElementById(a.gid + '.body.gridrow_' + a.row);
+  const b = document.getElementById(a.gid + '.body');
+  if (!row || !b) return null;
+  const cb = [...document.querySelectorAll('div[id^="' + row.id + '."]')]
+      .find(e => e.id.indexOf('cellcheckbox') >= 0 && !e.id.endsWith(':icontext'));
+  if (!cb) return null;
+  const r = cb.getBoundingClientRect(), br = b.getBoundingClientRect();
+  return {x: r.x + r.width / 2, y: r.y + r.height / 2, bottom: br.y + br.height - 4,
+          gx: br.x + br.width / 2, gy: br.y + br.height / 2,
+          text: (row.innerText || '').replace(/\s+/g, ' ').trim(),
+          inside: r.y >= br.y && r.y + r.height <= br.y + br.height};
+}
+"""
+
 JS_VISIBLE_POINT = r"""
 (id) => {
   const e = document.getElementById(id);
@@ -362,7 +378,24 @@ def cmd_fill(page, plan, save):
     if h["x"] is None:
         raise SystemExit("⛔ 그 예산 줄에 선택 칸이 없습니다: %s" % h["text"])
     E.log("예산 줄: %s" % h["text"])
-    nexa_click(page, h["x"], h["y"])
+    # ★ 예산표가 길면 그 줄이 팝업 아래쪽(화면 밖)에 있다 — 굴려서 보이게 한 뒤 누른다
+    #   (2026-09-21 경기 테스트 제보: 화면 밖 좌표를 눌러 아무것도 안 골라지고 «예산잔액 0» 으로 멈춤)
+    place = page.evaluate(JS_CBPLACE, {"gid": bg, "row": h["row"]})
+    for _ in range(12):
+        if not place or place["inside"]:
+            break
+        page.mouse.move(place["gx"], place["gy"])
+        page.mouse.wheel(0, 120 if place["y"] > place["bottom"] else -120)
+        page.wait_for_timeout(350)
+        place = page.evaluate(JS_CBPLACE, {"gid": bg, "row": h["row"]})
+    if place:
+        if plan["예산"] not in place["text"]:
+            raise SystemExit("⛔ 굴리는 동안 줄이 바뀌었습니다: %s" % place["text"][:90])
+        if not place["inside"]:
+            raise SystemExit("⛔ 그 예산 줄을 화면 안으로 못 가져왔습니다: %s" % place["text"][:90])
+        nexa_click(page, place["x"], place["y"])
+    else:
+        nexa_click(page, h["x"], h["y"])
     page.wait_for_timeout(1200)
     click_in_popup(page, "확인")
     page.wait_for_timeout(3500)
@@ -372,6 +405,8 @@ def cmd_fill(page, plan, save):
     try:
         if blc and int(blc.replace(",", "")) < plan["합계"]:
             E.log("⛔ 예산잔액(%s)이 합계(%s)보다 적습니다. 여기서 멈춥니다." % (blc, money(plan["합계"])))
+            if int(blc.replace(",", "")) == 0:
+                E.log("   (잔액이 0이면 예산 줄이 아예 안 골라졌을 수 있습니다 — 캡처에 예산선택 창이 남아 있는지 봐 주세요)")
             E.shot(page, "품의_채움.png")
             return {"채움": False, "이유": "예산잔액 부족", "예산잔액": blc}
     except ValueError:
