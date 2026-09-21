@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """학교 밖에서 나이스·에듀파인을 쓰기 위한 EVPN(원격업무지원) 자동 연결.
 
-지금은 **서울(evpn.sen.go.kr, AXGATE VPN Client)** 만 실제로 시험했다. 다른 시도는 설정의
-evpn_url 을 바꿔 쓸 수 있게만 해 두었고, 같은 방식인지 확인하지 않았다.
+지금은 **서울(evpn.sen.go.kr, AXGATE VPN Client)** 만 실제로 연결해 봤다. 다른 시도는 설정의
+나이스 주소에서 EVPN 주소를 골라 쓴다(EVPN_BY_CODE, 설정에 evpn_url 을 적으면 그게 먼저).
+경기는 포털 스크립트가 서울과 같음까지만 확인했고, 실제 연결은 아직 안 해 봤다.
 
   python evpn.py                 상태만 본다 (설치·도우미·연결)
   python evpn.py setup --user 아이디    EVPN 아이디 저장 (비밀번호가 인증서 암호와 다르면 새 창에서 받는다)
   python evpn.py install         도우미 설치 — 처음 한 번, «허용하시겠어요? [예]» 를 한 번 누른다
   python evpn.py connect         연결만
   python evpn.py disconnect      끊기만
+  python evpn.py ping            (VPN 연결 중에) 내 지역 업무포털이 열리는지만 본다
   python run_vpn.py -- python main.py 2026-09-14    ← 평소엔 이걸 쓴다 (연결 → 작업 → 끊기 한 번에)
 
 왜 도우미가 필요한가:
@@ -23,6 +25,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -76,8 +79,40 @@ def _cfg() -> dict:
         return {}
 
 
+# 시도별 EVPN 주소 — 나이스 주소(https://{코드}.neis.go.kr)의 코드로 고른다.
+# 교육청 공개 전국 EVPN 주소표 + 공식 포털 확인(2026-09-11). 경북만 도메인이 .gbe.kr 이다.
+# 경기(goe)는 2026-09-21 포털의 axgate.js·axgate2.js 가 서울과 md5 까지 같고 로그인 칸 id 도 같음을 확인
+EVPN_BY_CODE = {c: f"https://evpn.{c}.go.kr/" for c in (
+    "sen", "pen", "dge", "ice", "gen", "dje", "use", "sje", "goe", "gwe",
+    "cbe", "cne", "jbe", "jne", "gne", "jje")}
+EVPN_BY_CODE["gbe"] = "https://evpn.gbe.kr/"
+
+
+def portal_url() -> str:
+    """이 선생님 지역의 업무포털 — 연결 시험(ping)에 쓴다."""
+    m = re.match(r"https?://([a-z]{3})\.neis\.go\.kr", _cfg().get("neis_url") or "")
+    return f"https://{m.group(1) if m else 'sen'}.eduptl.kr"
+
+
+def ping() -> int:
+    """VPN 이 붙은 상태에서 업무포털이 열리는지만 본다 (run_vpn.py -- python evpn.py ping)."""
+    import urllib.request
+    url = portal_url()
+    try:
+        code = urllib.request.urlopen(url, timeout=20).status
+    except Exception as e:
+        print(f"업무포털 응답 없음 ({url}) — {type(e).__name__}")
+        return 1
+    print(f"업무포털 응답 {code} ({url})")
+    return 0 if code == 200 else 1
+
+
 def evpn_url() -> str:
-    return _cfg().get("evpn_url") or SEOUL_EVPN_URL
+    cfg = _cfg()
+    if cfg.get("evpn_url"):
+        return cfg["evpn_url"]
+    m = re.match(r"https?://([a-z]{3})\.neis\.go\.kr", cfg.get("neis_url") or "")
+    return EVPN_BY_CODE.get(m.group(1), SEOUL_EVPN_URL) if m else SEOUL_EVPN_URL
 
 
 def load_credentials() -> tuple[str | None, str | None]:
@@ -522,7 +557,7 @@ def status() -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="EVPN 자동 연결")
     ap.add_argument("cmd", nargs="?", default="status",
-                    choices=["status", "setup", "password", "install", "connect", "disconnect"])
+                    choices=["status", "setup", "password", "install", "connect", "disconnect", "ping"])
     ap.add_argument("--user")
     a = ap.parse_args()
     if a.cmd == "status":
@@ -537,3 +572,5 @@ if __name__ == "__main__":
         sys.exit(0 if connect() else 1)
     if a.cmd == "disconnect":
         sys.exit(0 if disconnect() else 1)
+    if a.cmd == "ping":
+        sys.exit(ping())
