@@ -11,7 +11,6 @@ import os
 import subprocess
 import sys
 import time
-from getpass import getpass
 from pathlib import Path
 
 import keyring
@@ -227,10 +226,10 @@ def main():
         print("   평소 업무포털이 되는 컴퓨터인지, USB 인증서면 꽂혀 있는지 확인해 주세요.")
         print("   나이스 '인증서 로그인' 창에 뜨는 이름을 알면 그대로 적어도 됩니다.")
     cert_name = ask("인증서 이름", old.get("cert_name", "") or (found[0] if found else ""))
-    cert_password = getpass("인증서 비밀번호 (화면에 표시되지 않습니다, 그대로 두려면 Enter): ")
+    cert_password = teacher_config.secret_input("인증서 비밀번호 (화면에 표시되지 않습니다, 그대로 두려면 Enter): ")
     if not cert_password and not keyring.get_password(teacher_config.KEYRING_SERVICE, cert_name):
         print("  ⚠️  저장된 비밀번호가 없습니다. 다시 입력해주세요.")
-        cert_password = getpass("인증서 비밀번호: ")
+        cert_password = teacher_config.secret_input("인증서 비밀번호: ")
 
     print("\n── 4. 복무 신청용 값 (안 쓰면 그냥 Enter) ──")
     contact = ask("근무상황신청에 넣을 연락처 (예: 010-1234-5678)",
@@ -292,6 +291,7 @@ if __name__ == "__main__":
         sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
         sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
         sys.stderr = sys.stdout
+        teacher_config.prepare_console_window()
     try:
         main()
         code = 0

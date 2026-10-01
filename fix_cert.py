@@ -7,7 +7,6 @@ Windows 자격 증명 관리자(keyring)에만 저장된다.
   사용법:  python fix_cert.py
 """
 import sys
-from getpass import getpass
 
 import keyring
 
@@ -28,7 +27,7 @@ if not cert_name:
     print("❌  인증서 이름이 비어 있습니다.")
     sys.exit(1)
 
-cert_password = getpass("인증서 비밀번호 (화면에 표시되지 않습니다): ")
+cert_password = teacher_config.secret_input("인증서 비밀번호 (화면에 표시되지 않습니다): ")
 if not cert_password:
     print("❌  비밀번호가 비어 있습니다. 다시 실행해주세요.")
     sys.exit(1)

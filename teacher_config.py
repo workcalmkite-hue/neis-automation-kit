@@ -64,3 +64,62 @@ def load_config() -> dict:
 def save_config(data: dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def secret_input(prompt: str) -> str:
+    """비밀번호를 화면에 안 보이게 받는다.
+
+    ★ getpass 를 그대로 쓰면 안 되는 자리가 있다 — 설정 마법사처럼 sys.stdin 을 CONIN$ 로
+    갈아 끼운 새 창에서는 getpass 가 «Can not control echo on the terminal» 경고를 내고
+    친 글자를 그대로 화면에 찍는다 (2026-10-01 샌드박스 실측). 윈도우에서는 키보드를 직접 읽는다.
+    """
+    if os.name != "nt":
+        from getpass import getpass
+        return getpass(prompt)
+    import msvcrt
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    chars = []
+    while True:
+        ch = msvcrt.getwch()
+        if ch in ("\r", "\n"):
+            break
+        if ch == "\x03":
+            raise KeyboardInterrupt
+        if ch == "\x08":
+            if chars:
+                chars.pop()
+            continue
+        if ch in ("\x00", "\xe0"):   # 화살표·F키 같은 특수키는 두 글자로 온다 — 버린다
+            msvcrt.getwch()
+            continue
+        chars.append(ch)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return "".join(chars)
+
+
+def prepare_console_window() -> None:
+    """새로 띄운 검은 창을 «바로 칠 수 있는 상태»로 만든다 (윈도우만).
+
+    ① 빠른 편집(QuickEdit) 끄기 — 켜져 있으면 창을 마우스로 한 번 누르는 순간 «선택 모드»가 되고,
+       그다음 Enter 는 답이 아니라 «선택 복사»로 먹힌다. 선생님 눈에는 «Enter 가 안 먹는다»로 보인다
+       (2026-10-01 샌드박스 실측: 창을 누른 뒤 첫 Enter 가 사라졌다).
+    ② 창을 맨 앞으로 — 클로드 앱 뒤에 숨어 뜨면 선생님이 못 찾는다.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        import msvcrt
+        k32 = ctypes.windll.kernel32
+        h = msvcrt.get_osfhandle(sys.stdin.fileno())
+        mode = ctypes.c_uint()
+        if k32.GetConsoleMode(h, ctypes.byref(mode)):
+            ENABLE_QUICK_EDIT_MODE, ENABLE_EXTENDED_FLAGS = 0x0040, 0x0080
+            k32.SetConsoleMode(h, (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS)
+        hwnd = k32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass

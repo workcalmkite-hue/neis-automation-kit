@@ -535,8 +535,14 @@ def password_window() -> int:
         ok = bool(keyring.get_password(teacher_config.KEYRING_SERVICE, KEYRING_EVPN_ACCOUNT))
         print("✅  EVPN 비밀번호 저장됨" if ok else "❌  저장되지 않았습니다")
         return 0 if ok else 1
-    from getpass import getpass
-    pw = getpass("EVPN 비밀번호 (화면에 안 보입니다): ")
+    try:
+        sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+        # 부모가 출력을 DEVNULL 로 넘겨서, 안 바꾸면 안내 문구가 새 창에 안 보인다
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+    except OSError:
+        pass
+    teacher_config.prepare_console_window()
+    pw = teacher_config.secret_input("EVPN 비밀번호 (화면에 안 보입니다): ")
     if pw:
         keyring.set_password(teacher_config.KEYRING_SERVICE, KEYRING_EVPN_ACCOUNT, pw)
         print("저장했습니다. 이 창은 3초 뒤 닫힙니다.")

@@ -40,9 +40,11 @@ function Find-Python {
 
 $py = Find-Python
 if (-not $py -and (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Write-Host "  파이썬이 없어서 지금 깝니다 (winget · 2~5분, 창을 닫지 마세요)..." -ForegroundColor Yellow
+    Write-Host "  파이썬이 없어서 지금 깝니다 (winget · 보통 2~5분, 느린 컴퓨터는 15분 넘게도 걸립니다. 창을 닫지 마세요)..." -ForegroundColor Yellow
     $ErrorActionPreference = "Continue"
-    winget install -e --id Python.Python.3.13 --scope user --silent --accept-package-agreements --accept-source-agreements
+    # --source winget 필수 — 없으면 winget 이 «msstore» 목록까지 뒤지다가 그쪽이 실패하면(0x8a15003b)
+    #   «--source 로 하나를 고르라»며 13초 만에 멈춘다 (2026-10-01 샌드박스 실측)
+    winget install -e --id Python.Python.3.13 --source winget --scope user --silent --accept-package-agreements --accept-source-agreements
     $ErrorActionPreference = "Stop"
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
     $py = Find-Python
