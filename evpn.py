@@ -557,6 +557,11 @@ def status() -> int:
     print(f"EVPN 도우미          {'설치됨' if helper_installed() else '❌ 없음 → python evpn.py install'}")
     print(f"EVPN 아이디·비밀번호  {'있음' if u else '❌ 아이디 없음'} / {'있음' if p else '❌ 없음'}")
     print(f"VPN 어댑터           {tap_status()}")
+    try:    # 연결이 돼도 이게 없으면 나이스 [인증서 로그인] 이 아무 반응이 없다 (2026-10-02 실측)
+        import neis_cert
+        print(f"나이스 인증서 프로그램 {'설치됨' if neis_cert.program_installed() else '❌ 없음 → 5-1단계'}")
+    except Exception:
+        pass
     return 0
 
 

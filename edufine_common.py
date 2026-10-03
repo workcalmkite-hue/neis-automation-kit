@@ -321,6 +321,13 @@ def login(page, cert_name, cert_pw):
     try:
         pwd.wait_for(timeout=90000)
     except Exception:
+        try:    # 인증서 창이 안 뜬 가장 흔한 이유 — 이 PC 에 인증서 프로그램이 없다
+            import neis_cert
+            h = neis_cert.hint()
+            if h:
+                log(h)
+        except Exception:
+            pass
         return manual_login(page)
 
     # ★ 인증서 줄을 먼저 «눌러서 고른» 다음 암호. 순서를 바꾸면 Enter 가 안 먹는다.

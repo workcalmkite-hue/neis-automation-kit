@@ -139,6 +139,11 @@ def preflight():
     print(f"✅  나이스 주소 {cfg['neis_url']}", flush=True)
     for line in gpki_notes(name, gpki_users()):
         print(line, flush=True)
+    try:    # 이게 없으면 [인증서 로그인] 을 눌러도 아무 창이 안 뜬다 (집 PC·새 노트북)
+        import neis_cert
+        print(neis_cert.hint() or "✅  나이스 인증서 프로그램 설치됨", flush=True)
+    except Exception:
+        pass
     return {**cfg, "cert_name": name}, pw
 
 

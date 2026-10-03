@@ -277,6 +277,12 @@ def main():
     })
 
     print("\n🎉  설정 완료!")
+    try:
+        import neis_cert
+        if not neis_cert.program_installed():
+            print("   ⚠️  이 PC에 나이스 인증서 프로그램이 없습니다 — 클로드가 다음 단계에서 깔아 드립니다.")
+    except Exception:
+        pass
     print(f"   설정 파일: {teacher_config.CONFIG_FILE}")
     print("   비밀번호는 이 파일이 아니라 Windows 자격 증명 관리자에 따로 저장됩니다.")
     print("\n   이제 구글 캘린더에 출결 이벤트를 넣고  python main.py  를 실행하면 됩니다.")
@@ -301,9 +307,19 @@ if __name__ == "__main__":
         print(f"\n❌  오류: {e}")
         code = 1
     if os.environ.get("NEIS_WIZARD_WINDOW"):
-        msg = "창을 닫으려면 Enter 를 누르세요..." if code else "✅ 끝났습니다. Enter 를 누르면 창이 닫힙니다..."
-        try:
-            input("\n" + msg)
-        except EOFError:
-            pass
+        if code:
+            try:
+                input("\n창을 닫으려면 Enter 를 누르세요...")
+            except EOFError:
+                pass
+        else:
+            # 성공이면 저절로 닫는다 — Enter 를 안 누르면 창이 하루 넘게 남아 있었다 (2026-10-02 실측)
+            print("\n✅ 끝났습니다. 이 창은 20초 뒤 저절로 닫힙니다 (Enter 를 누르면 바로).")
+            try:
+                import msvcrt
+                end = time.time() + 20
+                while time.time() < end and not msvcrt.kbhit():
+                    time.sleep(0.2)
+            except Exception:
+                time.sleep(20)
     sys.exit(code)

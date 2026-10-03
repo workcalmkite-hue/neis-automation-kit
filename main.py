@@ -284,6 +284,13 @@ async def auto_login(page: Page, wait_ms: int = 8_000):
 
     except Exception as e:
         print(f"⚠️  자동 로그인 실패: {e}")
+        try:    # 인증서 창이 안 뜬 가장 흔한 이유 — 집 PC 에 인증서 프로그램이 없다
+            import neis_cert
+            h = neis_cert.hint()
+            if h:
+                print(h)
+        except Exception:
+            pass
         try:    # 무슨 화면에 서 있는지 남긴다 (오류 페이지 구분용)
             print(f"   현재 화면: {page.url}")
             print(f"   제목: {await page.title()}")
