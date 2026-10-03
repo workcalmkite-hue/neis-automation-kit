@@ -43,7 +43,35 @@ static class Helper
                                           "NeisAutomationEVPN", "helper.log");
     static string UserDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                                           "neis-automation");
-    static string DoneFlag = Path.Combine(UserDir, "evpn_helper_done.flag");
+
+    // ★ 새 클로드 데스크톱 앱(스토어형 MSIX 패키지)에서 돌린 파이썬은 %LOCALAPPDATA% 에 쓴 파일이
+    //   Packages\<앱>\LocalCache\Local\ 아래로 «몰래» 옮겨진다. 도우미는 패키지 밖(예약 작업)이라
+    //   원래 자리만 보면 설정이 «없다» 고 나온다 (2026-10-03 샌드박스 실측). 두 곳을 다 본다.
+    static List<string> UserDirs()
+    {
+        var dirs = new List<string> { UserDir };
+        try
+        {
+            string pk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Packages");
+            foreach (var d in Directory.GetDirectories(pk))
+            {
+                string c = Path.Combine(d, "LocalCache", "Local", "neis-automation");
+                if (Directory.Exists(c)) dirs.Add(c);
+            }
+        }
+        catch { }
+        return dirs;
+    }
+
+    static bool DoneSignaled(DateTime started)
+    {
+        foreach (var d in UserDirs())
+        {
+            string f = Path.Combine(d, "evpn_helper_done.flag");
+            if (File.Exists(f) && File.GetLastWriteTime(f) > started) return true;
+        }
+        return false;
+    }
 
     static void Log(string m)
     {
@@ -85,7 +113,7 @@ static class Helper
         DateTime last2fa = DateTime.MinValue;
         while ((DateTime.Now - started).TotalSeconds < MAX_SECONDS)
         {
-            if (File.Exists(DoneFlag) && File.GetLastWriteTime(DoneFlag) > started) { Log("[신호] 키트가 끝 신호를 보냄"); break; }
+            if (DoneSignaled(started)) { Log("[신호] 키트가 끝 신호를 보냄"); break; }
 
             IntPtr dlg = FindDialogWithChild("2차 인증");
             if (dlg != IntPtr.Zero && !seen.Contains(dlg))
@@ -165,8 +193,14 @@ static class Helper
     // ---------------------------------------------------------------- 설정·암호
     static string ReadCertName()
     {
-        string f = Path.Combine(UserDir, "teacher_config.json");
-        if (!File.Exists(f)) return null;
+        string f = null;          // 여러 곳에 있으면 가장 최근에 저장된 것
+        foreach (var ud in UserDirs())
+        {
+            string c = Path.Combine(ud, "teacher_config.json");
+            if (File.Exists(c) && (f == null || File.GetLastWriteTime(c) > File.GetLastWriteTime(f))) f = c;
+        }
+        if (f == null) return null;
+        if (f.IndexOf(@"\Packages\", StringComparison.OrdinalIgnoreCase) >= 0) Log("[설정] 앱 전용 폴더의 설정을 씁니다");
         var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(f, Encoding.UTF8));
         object v;
         return d.TryGetValue("cert_name", out v) && v is string && ((string)v).Trim().Length > 0 ? ((string)v).Trim() : null;
