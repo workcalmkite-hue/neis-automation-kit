@@ -11,7 +11,6 @@
   python evpn.py connect         연결만
   python evpn.py disconnect      끊기만
   python evpn.py ping            (VPN 연결 중에) 내 지역 업무포털이 열리는지만 본다
-  python evpn.py manual on|off   인증서 암호를 내가 직접 칠지 (키보드 보안 PC 는 자동 입력이 «틀렸다» 로 거절된다)
   python run_vpn.py -- python main.py 2026-09-14    ← 평소엔 이걸 쓴다 (연결 → 작업 → 끊기 한 번에)
 
 왜 도우미가 필요한가:
@@ -411,9 +410,8 @@ async def _login_once(page, user: str, pw: str) -> bool:
         await page.click("#loginButton", timeout=8_000)
     except Exception:
         await page.locator("#loginButton").dispatch_event("click")
-    print("🔐  EVPN 포털 로그인 — 2차 인증은 " + ("선생님이 직접 입력해 주세요" if _cfg().get("evpn_2fa_manual") else "도우미가 넣습니다"))
-    wait = REGISTER_WAIT_SEC + (90 if _cfg().get("evpn_2fa_manual") else 0)   # 직접 입력이면 손으로 칠 시간을 더 준다
-    for i in range(wait // 2):
+    print("🔐  EVPN 포털 로그인 — 2차 인증은 도우미가 넣습니다")
+    for i in range(REGISTER_WAIT_SEC // 2):
         if await _text(page, "connect_status") == "Yes" and tap_status() == "Up":
             return True
         await page.wait_for_timeout(2000)
@@ -435,8 +433,6 @@ async def connect_async() -> bool:
     if url_note := ("" if evpn_url() == SEOUL_EVPN_URL else " (서울 외 지역 — 아직 시험 안 한 주소)"):
         print(f"ℹ️  EVPN 주소: {evpn_url()}{url_note}")
 
-    if _cfg().get("evpn_2fa_manual"):
-        print("⌨️  인증서 창이 뜨면 암호를 직접 입력해 주세요 (직접 입력 모드 — python evpn.py manual off 로 끔)")
     if not start_helper():
         print("❌  도우미 예약 작업을 실행하지 못했습니다 → python evpn.py install 을 다시 해 주세요")
         return False
@@ -469,30 +465,10 @@ async def connect_async() -> bool:
             print("❌  EVPN 에 두 번 다 연결하지 못했습니다. 도우미 기록:")
             for line in helper_log_tail():
                 print("    " + line)
-            _hint_if_rejected()
             return False
         finally:
             stop_helper()
             await ctx.close()
-
-
-def _hint_if_rejected() -> None:
-    if any("암호 거절" in line for line in helper_log_tail(30)):
-        print("💡  저장된 암호는 맞는데 «틀렸다» 가 뜬다면 키보드 보안 프로그램이 자동 입력을 막는 PC 입니다.")
-        print("    python evpn.py manual on  → 다음부터 인증서 창에서 암호만 직접 치면 됩니다")
-
-
-def manual(mode: str | None) -> int:
-    cfg = _cfg()
-    if not cfg:
-        print("❌  설정 파일이 없습니다 — 먼저 python setup_wizard.py")
-        return 1
-    if mode in ("on", "off"):
-        cfg["evpn_2fa_manual"] = mode == "on"
-        teacher_config.save_config(cfg)
-    on = bool(cfg.get("evpn_2fa_manual"))
-    print("⌨️  인증서 암호 직접 입력: " + ("켜짐 — 인증서 창에서 암호만 직접 칩니다" if on else "꺼짐 — 도우미가 자동으로 넣습니다"))
-    return 0
 
 
 async def disconnect_async() -> bool:
@@ -592,8 +568,7 @@ def status() -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="EVPN 자동 연결")
     ap.add_argument("cmd", nargs="?", default="status",
-                    choices=["status", "setup", "password", "install", "connect", "disconnect", "ping", "manual"])
-    ap.add_argument("mode", nargs="?", choices=["on", "off"])
+                    choices=["status", "setup", "password", "install", "connect", "disconnect", "ping"])
     ap.add_argument("--user")
     a = ap.parse_args()
     if a.cmd == "status":
@@ -610,5 +585,3 @@ if __name__ == "__main__":
         sys.exit(0 if disconnect() else 1)
     if a.cmd == "ping":
         sys.exit(ping())
-    if a.cmd == "manual":
-        sys.exit(manual(a.mode))

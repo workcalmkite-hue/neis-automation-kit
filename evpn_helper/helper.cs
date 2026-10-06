@@ -104,11 +104,9 @@ static class Helper
         EnsureAxgate();
 
         var cfg = ReadConfig();
-        bool manual = ReadManual(cfg);
         string certName = ReadCertName(cfg);
-        string pw = manual || certName == null ? null : ReadPassword(certName);
-        if (manual) Log("[설정] 인증서 비밀번호는 선생님이 직접 입력합니다 - 도우미는 건드리지 않습니다");
-        else if (certName == null) Log("[설정] 인증서 이름이 설정에 없습니다 — 2차 인증을 못 넣습니다");
+        string pw = certName == null ? null : ReadPassword(certName);
+        if (certName == null) Log("[설정] 인증서 이름이 설정에 없습니다 — 2차 인증을 못 넣습니다");
         else if (pw == null) Log("[설정] 저장된 인증서 암호가 없습니다 — 2차 인증을 못 넣습니다");
 
         var seen = new HashSet<IntPtr>();
@@ -122,9 +120,7 @@ static class Helper
             if (dlg != IntPtr.Zero && !seen.Contains(dlg))
             {
                 seen.Add(dlg);     // 처리 전에 먼저 표시 — 같은 창을 두 번 누르지 않는다
-                if (manual) Log("[2차인증] 창이 떴습니다 - 선생님이 직접 입력하실 차례입니다");
-                else if (wrong > 0) Log("[2차인증] 앞에서 암호가 거절돼 이번 창은 선생님이 직접 입력하실 차례입니다");
-                else if (done2fa >= MAX_2FA) Log("[2차인증] 횟수 초과 — 이번 창은 건드리지 않습니다");
+                if (done2fa >= MAX_2FA) Log("[2차인증] 횟수 초과 — 이번 창은 건드리지 않습니다");
                 else if (pw == null) Log("[2차인증] 창이 떴지만 암호가 없어 못 넣습니다");
                 else
                 {
@@ -220,14 +216,6 @@ static class Helper
         return d != null && d.TryGetValue("cert_name", out v) && v is string && ((string)v).Trim().Length > 0 ? ((string)v).Trim() : null;
     }
 
-    // evpn_2fa_manual: true — 키보드 보안이 걸린 PC. 프로그램이 넣은 암호는 칸에 보여도 «틀렸다» 가 뜬다
-    // (2026-09-22·24 경남 선생님 PC 실측: WM_SETTEXT·SendInput 둘 다 거절, 같은 암호를 손으로 치면 통과).
-    static bool ReadManual(Dictionary<string, object> d)
-    {
-        object v;
-        return d != null && d.TryGetValue("evpn_2fa_manual", out v) && v is bool && (bool)v;
-    }
-
     // 파이썬 keyring 이 윈도우 자격 증명 관리자에 넣은 값을 읽는다.
     // 대상 이름은 "<계정>@neis-automation" (같은 서비스에 계정이 둘 이상이면) 또는 "neis-automation".
     static string ReadPassword(string account)
@@ -300,11 +288,10 @@ static class Helper
         PostMessage(login, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
         Log("[2차인증] 암호 넣고 [로그인]");
 
-        // 거절되면 다시 넣지 않는다 — 키보드 보안 PC 는 어떤 방식으로 넣어도 같고(경남 실측), 계속 누르면 인증서가 잠길 수 있다
+        // 거절 창이 뜨면 글자를 기록하고 닫는다 (원인 진단용). 경남 선생님 PC 에서 칸에 들어가 보여도 거절됐다(2026-10-06 제보)
         string err = WaitErrorBox(dlg, 6);
         if (err == null) return 1;
         Log("[2차인증] 암호 거절: " + err);
-        Log("[2차인증] 키보드 보안 PC 일 수 있습니다 - 이번엔 선생님이 직접 입력해 주세요. 매번 그렇다면: python evpn.py manual on");
         return 2;
     }
 
@@ -318,7 +305,7 @@ static class Helper
     }
 
     // [로그인] 뒤 AXGATE 가 띄운 오류 창을 찾는다. 경남 실제 글자(2026-10-06 캡처, 창 제목 AxgateVpnClient):
-    //   «비밀번호 입력이 맞지 않습니다. 다시 입력해 주세요. (1 회)» — 끝의 횟수가 쌓이므로 다시 넣지 않는다.
+    //   «비밀번호 입력이 맞지 않습니다. 다시 입력해 주세요. (1 회)»
     // 오류 창(«비밀번호/암호 … 맞지/틀/일치/오류»)을 찾아 글자를 돌려주고 [확인] 으로 닫는다.
     // 암호 자체는 오류 창 글자에 없으므로 로그에 남겨도 된다.
     static string WaitErrorBox(IntPtr dlg, int seconds)
