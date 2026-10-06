@@ -103,6 +103,9 @@ cfg = teacher_config.load_config()   # DEFAULTS가 병합된 dict를 준다
 main.py              학생 출결 자동 입력 (구글 캘린더 → 나이스)
 main_bokmu.py        본인 복무(조퇴·외출·지각 / 병조퇴·병외출·병지각) 신청·상신
 verify_attendance.py 캘린더 vs 나이스 대조 (읽기 전용)
+month_close.py       월 출결마감 — 일마감(한 번에)·월마감 · 학급별/월별 출결현황 내려받기(출력/)
+geuntae.py           근태 색인 목록(.hwp) 채우기 — 캘린더 → 한글 표, 한글 프로그램(pyhwpx)으로만 쓴다
+print_month.py       근태신고서철 3종 인쇄 — 이름을 댄 프린터로 직접 보낸다
 setup_wizard.py      최초 설정 마법사
 fix_cert.py          인증서 이름·비밀번호만 다시 설정
 teacher_config.py    설정 저장/로드

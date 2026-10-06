@@ -401,6 +401,7 @@ async def _login_once(page, user: str, pw: str) -> bool:
         await _logout(page)            # 반쪽 세션이 남아 있으면 깨끗하게 끊고 다시
     loc_u, loc_p = page.locator("#username").first, page.locator("#password").first
     await loc_u.wait_for(state="visible", timeout=20_000)
+    await _hide_overlays(page)         # 다시 로그인할 때 안내 팝업(layer_popup)이 아이디 칸을 덮는다 (2026-10-06 실측)
     for loc, val in ((loc_u, user), (loc_p, pw)):
         await loc.click()
         await loc.fill("")

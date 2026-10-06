@@ -47,6 +47,11 @@ def load_oauth_client() -> dict:
         sys.exit(1)
     try:
         data = json.loads(_OAUTH_CLIENT_FILE.read_text(encoding="utf-8"))
+        # 구글에서 받은 파일 그대로(client_secret_….json / credentials.json — {"installed": {...}})도 받는다
+        for k in ("installed", "web"):
+            if isinstance(data.get(k), dict):
+                data = data[k]
+                break
         return {
             "installed": {
                 "client_id": data["client_id"],
