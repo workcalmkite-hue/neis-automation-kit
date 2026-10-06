@@ -103,13 +103,16 @@ static class Helper
     {
         EnsureAxgate();
 
-        string certName = ReadCertName();
-        string pw = certName == null ? null : ReadPassword(certName);
-        if (certName == null) Log("[설정] 인증서 이름이 설정에 없습니다 — 2차 인증을 못 넣습니다");
+        var cfg = ReadConfig();
+        bool manual = ReadManual(cfg);
+        string certName = ReadCertName(cfg);
+        string pw = manual || certName == null ? null : ReadPassword(certName);
+        if (manual) Log("[설정] 인증서 비밀번호는 선생님이 직접 입력합니다 - 도우미는 건드리지 않습니다");
+        else if (certName == null) Log("[설정] 인증서 이름이 설정에 없습니다 — 2차 인증을 못 넣습니다");
         else if (pw == null) Log("[설정] 저장된 인증서 암호가 없습니다 — 2차 인증을 못 넣습니다");
 
         var seen = new HashSet<IntPtr>();
-        int done2fa = 0, dup = 0;
+        int done2fa = 0, dup = 0, wrong = 0;
         DateTime last2fa = DateTime.MinValue;
         while ((DateTime.Now - started).TotalSeconds < MAX_SECONDS)
         {
@@ -119,9 +122,16 @@ static class Helper
             if (dlg != IntPtr.Zero && !seen.Contains(dlg))
             {
                 seen.Add(dlg);     // 처리 전에 먼저 표시 — 같은 창을 두 번 누르지 않는다
-                if (done2fa >= MAX_2FA) Log("[2차인증] 횟수 초과 — 이번 창은 건드리지 않습니다");
+                if (manual) Log("[2차인증] 창이 떴습니다 - 선생님이 직접 입력하실 차례입니다");
+                else if (wrong > 0) Log("[2차인증] 앞에서 암호가 거절돼 이번 창은 선생님이 직접 입력하실 차례입니다");
+                else if (done2fa >= MAX_2FA) Log("[2차인증] 횟수 초과 — 이번 창은 건드리지 않습니다");
                 else if (pw == null) Log("[2차인증] 창이 떴지만 암호가 없어 못 넣습니다");
-                else if (Handle2fa(dlg, certName, pw)) { done2fa++; last2fa = DateTime.Now; }
+                else
+                {
+                    int r = Handle2fa(dlg, certName, pw);
+                    if (r > 0) { done2fa++; last2fa = DateTime.Now; }
+                    if (r == 2) wrong++;
+                }
             }
 
             IntPtr d2 = FindDialogWithChild("이미 접속되어 있는 ID");
@@ -139,7 +149,7 @@ static class Helper
             }
             Thread.Sleep(400);
         }
-        Log("[요약] 2차인증 " + done2fa + "번 · 이미접속 " + dup + "번");
+        Log("[요약] 2차인증 " + done2fa + "번 · 이미접속 " + dup + "번 · 암호틀림 " + wrong + "번");
     }
 
     // ---------------------------------------------------------------- AXGATE 띄우기
@@ -191,7 +201,7 @@ static class Helper
     }
 
     // ---------------------------------------------------------------- 설정·암호
-    static string ReadCertName()
+    static Dictionary<string, object> ReadConfig()
     {
         string f = null;          // 여러 곳에 있으면 가장 최근에 저장된 것
         foreach (var ud in UserDirs())
@@ -201,9 +211,21 @@ static class Helper
         }
         if (f == null) return null;
         if (f.IndexOf(@"\Packages\", StringComparison.OrdinalIgnoreCase) >= 0) Log("[설정] 앱 전용 폴더의 설정을 씁니다");
-        var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(f, Encoding.UTF8));
+        return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(f, Encoding.UTF8));
+    }
+
+    static string ReadCertName(Dictionary<string, object> d)
+    {
         object v;
-        return d.TryGetValue("cert_name", out v) && v is string && ((string)v).Trim().Length > 0 ? ((string)v).Trim() : null;
+        return d != null && d.TryGetValue("cert_name", out v) && v is string && ((string)v).Trim().Length > 0 ? ((string)v).Trim() : null;
+    }
+
+    // evpn_2fa_manual: true — 키보드 보안이 걸린 PC. 프로그램이 넣은 암호는 칸에 보여도 «틀렸다» 가 뜬다
+    // (2026-09-22·24 경남 선생님 PC 실측: WM_SETTEXT·SendInput 둘 다 거절, 같은 암호를 손으로 치면 통과).
+    static bool ReadManual(Dictionary<string, object> d)
+    {
+        object v;
+        return d != null && d.TryGetValue("evpn_2fa_manual", out v) && v is bool && (bool)v;
     }
 
     // 파이썬 keyring 이 윈도우 자격 증명 관리자에 넣은 값을 읽는다.
@@ -230,7 +252,7 @@ static class Helper
     }
 
     // ---------------------------------------------------------------- 2차 인증 창
-    static bool Handle2fa(IntPtr dlg, string certName, string pw)
+    static int Handle2fa(IntPtr dlg, string certName, string pw)
     {
         IntPtr hdd = IntPtr.Zero, list = IntPtr.Zero, edit = IntPtr.Zero, login = IntPtr.Zero;
         foreach (var c in Children(dlg))
@@ -244,12 +266,12 @@ static class Helper
         if (list == IntPtr.Zero || edit == IntPtr.Zero || login == IntPtr.Zero)
         {
             Log("[2차인증] 창 안의 칸을 못 찾음 (목록=" + (list != IntPtr.Zero) + " 암호칸=" + (edit != IntPtr.Zero) + " 로그인=" + (login != IntPtr.Zero) + ")");
-            return false;
+            return 0;
         }
         if (hdd != IntPtr.Zero) { SendMessage(hdd, BM_CLICK, IntPtr.Zero, IntPtr.Zero); Thread.Sleep(600); }
 
         int count = (int)SendMessage(list, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero);
-        if (count <= 0) { Log("[2차인증] 인증서 목록이 비어 있습니다 (C:\\GPKI 에 인증서가 있는지)"); return false; }
+        if (count <= 0) { Log("[2차인증] 인증서 목록이 비어 있습니다 (C:\\GPKI 에 인증서가 있는지)"); return 0; }
 
         // 인증서 이름이 들어 있는 줄을 찾는다. 딱 한 줄일 때만 고른다 — 여러 줄이면 멋대로 고르지 않는다.
         var rows = ReadListRows(list, count);
@@ -258,27 +280,70 @@ static class Helper
         {
             var hit = Enumerable.Range(0, count).Where(i => rows[i].Contains(certName)).ToList();
             if (hit.Count == 1) idx = hit[0];
-            else { Log("[2차인증] 인증서 " + count + "개 중 이름이 맞는 것 " + hit.Count + "개 — 고르지 않고 멈춥니다"); return false; }
+            else { Log("[2차인증] 인증서 " + count + "개 중 이름이 맞는 것 " + hit.Count + "개 — 고르지 않고 멈춥니다"); return 0; }
         }
         else if (count == 1) idx = 0;
-        else { Log("[2차인증] 인증서가 " + count + "개인데 목록 글자를 못 읽어 고르지 않습니다"); return false; }
+        else { Log("[2차인증] 인증서가 " + count + "개인데 목록 글자를 못 읽어 고르지 않습니다"); return 0; }
 
-        if (!SelectRow(list, idx)) { Log("[2차인증] 인증서 줄 선택을 확인 못 함"); return false; }
+        if (!SelectRow(list, idx)) { Log("[2차인증] 인증서 줄 선택을 확인 못 함"); return 0; }
         Log("[2차인증] 인증서 " + count + "개 중 " + (idx + 1) + "번째 선택");
+
+        int edits = Children(dlg).Count(c => ClassOf(c) == "Edit");
+        if (edits != 1) Log("[2차인증] 창 안의 입력칸이 " + edits + "개 — 첫 칸에 암호를 넣습니다");
 
         SendMessage(edit, WM_SETTEXT, IntPtr.Zero, pw);
         int n = (int)SendMessage(edit, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
-        if (n != pw.Length)
-        {
-            SendMessage(edit, WM_SETTEXT, IntPtr.Zero, "");
-            foreach (char ch in pw) { PostMessage(edit, WM_CHAR, (IntPtr)ch, IntPtr.Zero); Thread.Sleep(25); }
-            Thread.Sleep(400);
-            n = (int)SendMessage(edit, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
-        }
-        if (n != pw.Length) { Log("[2차인증] 암호 칸에 글자가 다 안 들어감 (" + n + "/" + pw.Length + ")"); return false; }
-        SendMessage(login, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
+        if (n != pw.Length) n = TypeChars(edit, pw);
+        if (n != pw.Length) { Log("[2차인증] 암호 칸에 글자가 다 안 들어감 (" + n + "/" + pw.Length + ")"); return 0; }
+
+        // SendMessage 로 누르면 오류 창이 닫힐 때까지 여기서 멈춘다 → PostMessage 로 누르고 오류 창을 따로 본다
+        PostMessage(login, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
         Log("[2차인증] 암호 넣고 [로그인]");
-        return true;
+
+        // 거절되면 다시 넣지 않는다 — 키보드 보안 PC 는 어떤 방식으로 넣어도 같고(경남 실측), 계속 누르면 인증서가 잠길 수 있다
+        string err = WaitErrorBox(dlg, 6);
+        if (err == null) return 1;
+        Log("[2차인증] 암호 거절: " + err);
+        Log("[2차인증] 키보드 보안 PC 일 수 있습니다 - 이번엔 선생님이 직접 입력해 주세요. 매번 그렇다면: python evpn.py manual on");
+        return 2;
+    }
+
+    static int TypeChars(IntPtr edit, string pw)
+    {
+        SendMessage(edit, WM_SETTEXT, IntPtr.Zero, "");
+        PostMessage(edit, WM_SETFOCUS, IntPtr.Zero, IntPtr.Zero);
+        foreach (char ch in pw) { PostMessage(edit, WM_CHAR, (IntPtr)ch, IntPtr.Zero); Thread.Sleep(40); }
+        Thread.Sleep(400);
+        return (int)SendMessage(edit, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    // [로그인] 뒤 AXGATE 가 띄운 오류 창을 찾는다. 경남 실제 글자(2026-10-06 캡처, 창 제목 AxgateVpnClient):
+    //   «비밀번호 입력이 맞지 않습니다. 다시 입력해 주세요. (1 회)» — 끝의 횟수가 쌓이므로 다시 넣지 않는다.
+    // 오류 창(«비밀번호/암호 … 맞지/틀/일치/오류»)을 찾아 글자를 돌려주고 [확인] 으로 닫는다.
+    // 암호 자체는 오류 창 글자에 없으므로 로그에 남겨도 된다.
+    static string WaitErrorBox(IntPtr dlg, int seconds)
+    {
+        var until = DateTime.Now.AddSeconds(seconds);
+        while (DateTime.Now < until)
+        {
+            Thread.Sleep(300);
+            IntPtr box = IntPtr.Zero; string text = null;
+            EnumWindows((h, _) =>
+            {
+                if (h == dlg || !IsWindowVisible(h) || ClassOf(h) != "#32770" || !OwnedByAxgate(h)) return true;
+                string t = string.Join(" ", Children(h).Where(c => ClassOf(c) == "Static").Select(c => TextOf(c).Trim()).Where(s => s.Length > 0));
+                if ((t.Contains("비밀번호") || t.Contains("암호")) && (t.Contains("맞지") || t.Contains("틀") || t.Contains("일치") || t.Contains("오류") || t.Contains("잘못")))
+                { box = h; text = t.Replace("\r", " ").Replace("\n", " "); return false; }
+                return true;
+            }, IntPtr.Zero);
+            if (box != IntPtr.Zero)
+            {
+                if (!ClickButton(box, "확인")) PostMessage(box, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                Thread.Sleep(500);
+                return text;
+            }
+        }
+        return null;
     }
 
     static bool SelectRow(IntPtr list, int idx)
@@ -415,7 +480,7 @@ static class Helper
     }
 
     // ---------------------------------------------------------------- Win32
-    const uint BM_CLICK = 0x00F5, WM_SETTEXT = 0x000C, WM_GETTEXTLENGTH = 0x000E, WM_CLOSE = 0x0010;
+    const uint BM_CLICK = 0x00F5, WM_SETFOCUS = 0x0007, WM_SETTEXT = 0x000C, WM_GETTEXTLENGTH = 0x000E, WM_CLOSE = 0x0010;
     const uint WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_CHAR = 0x0102;
     const uint LVM_GETITEMCOUNT = 0x1004, LVM_GETNEXTITEM = 0x100C, LVM_GETITEMTEXTW = 0x1073;
     const int LVNI_SELECTED = 2, VK_HOME = 0x24, VK_DOWN = 0x28;
