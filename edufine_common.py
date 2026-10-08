@@ -116,14 +116,45 @@ CHROME_ARGS = [
 ]
 
 
+def profile_in_use():
+    """에듀파인 전용 크롬 프로필을 다른 크롬이 쓰고 있나. 쓰는 동안 크롬이 lockfile 을 잠근다 (윈도우 실측)."""
+    lock = os.path.join(PROFILE_DIR, "lockfile")
+    if not os.path.exists(lock):
+        return False
+    try:
+        open(lock, "a").close()
+        return False
+    except PermissionError:
+        return True
+
+
+def wait_profile_free(timeout=180):
+    """★ 프로필이 쓰이는 중에 띄우면 새 창이 안 뜨고 «그 크롬에 about:blank 탭만» 늘어난다
+    (2026-10-08 — 다른 클로드 창이 같은 프로필로 공문을 받는 동안 탭이 2개씩 쌓였다). 비워질 때까지 기다린다."""
+    if not profile_in_use():
+        return
+    log("  ⏳ 에듀파인 자동화용 크롬이 다른 작업에 쓰이는 중입니다 — 끝날 때까지 기다립니다 (최대 %d초)" % timeout)
+    end = time.time() + timeout
+    while time.time() < end:
+        time.sleep(3)
+        if not profile_in_use():
+            time.sleep(2)
+            return
+    raise SystemExit("에듀파인 자동화용 크롬이 %d초 넘게 다른 작업에 쓰이고 있습니다. "
+                     "그 작업이 끝나거나 그 크롬 창을 닫은 뒤 다시 실행해 주세요." % timeout)
+
+
 def launch(p):
     """에듀파인 전용 크롬을 띄우고 (ctx, page) 를 돌려준다."""
+    wait_profile_free()
     kw = dict(user_data_dir=PROFILE_DIR, headless=False, args=CHROME_ARGS,
               ignore_default_args=["--enable-automation"], viewport=None)
     try:
         ctx = p.chromium.launch_persistent_context(channel="chrome", **kw)
     except Exception as e:
         msg = str(e)
+        if profile_in_use():                 # 그 사이 다른 작업이 잡았다 — 두 번째 크롬으로 또 띄우면 탭만 는다
+            raise SystemExit("에듀파인 자동화용 크롬이 다른 작업에 쓰이고 있습니다. 끝난 뒤 다시 실행해 주세요.")
         if "ProcessSingleton" in msg or "already in use" in msg or "user data directory" in msg:
             raise SystemExit(
                 "에듀파인 자동화용 크롬이 이미 켜져 있습니다. 그 창을 닫고 다시 실행해 주세요.\n"
