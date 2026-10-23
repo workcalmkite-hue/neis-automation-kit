@@ -183,7 +183,7 @@ class Widget:
         self.root.attributes("-topmost", True)
         sw = self.root.winfo_screenwidth()
         self.root.geometry("+%d+%d" % (st.get("x", sw - 470), st.get("y", 12)))
-        self.prewarm = st.get("prewarm", True)
+        self.prewarm = st.get("prewarm", False)   # 기본 끔 — 누르기 전에 창이 뜨면 «안 누른 문서등록대장이 켜진다»로 보인다 (2026-10-23)
         self.locks = {"neis": threading.Lock(), "edufine": threading.Lock(), "inspect": threading.Lock()}
         self.busy = None
         self.note = ("", INK)
