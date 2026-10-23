@@ -34,6 +34,66 @@ CLOSE_CONFIRM_TEXT = "윈도우창을 닫으시겠습니까?"
 MINUTE_STEP = 5  # 시작/종료 '분' 콤보박스는 5분 단위로만 선택 가능
 
 
+# ── 나이스 «불러오는 중» 가림막 ─────────────────────────────────
+# 화면이 데이터를 불러오는 동안 .isloading-overlay 가 전체를 덮는다. 그 사이 누르면
+# 클릭이 가림막에 먹히고, 5초 timeout 이 지나면 «intercepts pointer events» 로 죽는다.
+# 학교 밖(EVPN)·느린 회선에서는 이 가림막이 5초를 넘기기 일쑤다
+# (2026-10-23 장충고 선생님 제보 — 상신 중 이 오류로 멈춤). 그래서 누르기 전에 걷힐 때까지 기다린다.
+LOAD_OVERLAY = ".isloading-overlay, [class*='isloading'], [class*='loading-overlay'], .blockUI"
+
+# 「보이는가」만 보면 안 된다 — pointer-events:none 인 껍데기는 클릭을 안 막는다.
+JS_OVERLAY_COUNT = """
+(s) => [...document.querySelectorAll(s)].filter(e => {
+  const st = getComputedStyle(e);
+  if (st.display === 'none' || st.visibility === 'hidden') return false;
+  if (parseFloat(st.opacity === '' ? '1' : st.opacity) === 0) return false;
+  if (st.pointerEvents === 'none') return false;
+  const r = e.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}).length
+"""
+
+# 끝내 안 걷힐 때만 클릭을 통과시킨다. 요소는 지우지 않는다 (사이트 스크립트가 찾다가 깨질 수 있다).
+JS_PASS_OVERLAY = """
+(s) => { let n = 0; document.querySelectorAll(s).forEach(e => {
+  const st = getComputedStyle(e);
+  if (st.display !== 'none' && st.visibility !== 'hidden' && st.pointerEvents !== 'none') {
+    e.style.setProperty('pointer-events', 'none', 'important'); n++; } }); return n; }
+"""
+
+
+async def wait_loading(page: Page, timeout_s: float = 60) -> bool:
+    """가림막이 걷힐 때까지 기다린다. 걷히면 True, timeout 이면 False."""
+    end = time.time() + timeout_s
+    warned = False
+    while time.time() < end:
+        try:
+            if await page.evaluate(JS_OVERLAY_COUNT, LOAD_OVERLAY) == 0:
+                return True
+        except Exception:
+            return True     # 화면 전환 중 — 판정 불가면 막지 않는다
+        if not warned:
+            print("⏳  나이스 화면을 불러오는 중입니다. 잠시 기다립니다...")
+            warned = True
+        await page.wait_for_timeout(500)
+    return False
+
+
+async def click(page: Page, loc, timeout: int = 5000, **kw):
+    """누르되, 가림막에 먹히면 걷힐 때까지(최대 90초) 기다렸다가 다시 누른다.
+    playwright 는 가림막이 덮고 있으면 실제로 누르지 않고 재시도만 하므로 «두 번 눌림» 은 없다."""
+    try:
+        await loc.click(timeout=timeout, **kw)
+        return
+    except Exception as e:
+        if "intercepts pointer events" not in str(e):
+            raise
+    if not await wait_loading(page, 90):
+        n = await page.evaluate(JS_PASS_OVERLAY, LOAD_OVERLAY)
+        print(f"⚠️  90초가 지나도 화면 가림막이 안 걷혀 클릭만 통과시킵니다 ({n}개)")
+    await loc.click(timeout=max(timeout, 15000), **kw)
+
+
 def round_to_step(hm: str, step: int = MINUTE_STEP) -> str:
     h, m = map(int, hm.split(":"))
     m = round(m / step) * step
@@ -66,7 +126,7 @@ async def select_combo_option(page: Page, combo, option_text: str, max_scroll: i
     await dismiss_close_confirm(page)
     await combo.scroll_into_view_if_needed()
     await page.wait_for_timeout(200)
-    await combo.click(timeout=5000, force=True)
+    await click(page, combo, timeout=5000, force=True)
 
     popup = page.locator('.cl-combobox-list[role="listbox"]').last
     await popup.wait_for(state="visible", timeout=5000)
@@ -87,12 +147,12 @@ async def select_combo_option(page: Page, combo, option_text: str, max_scroll: i
     else:
         raise RuntimeError(f"콤보박스 옵션 '{option_text}'을(를) 찾지 못함")
 
-    await option.first.click(timeout=5000)
+    await click(page, option.first, timeout=5000)
     await page.wait_for_timeout(200)
 
 
 async def fill_text_input(page: Page, locator, value: str):
-    await locator.click(timeout=5000)
+    await click(page, locator, timeout=5000)
     await locator.press("Control+a")
     await locator.type(value, delay=20)
     await page.wait_for_timeout(150)
@@ -100,9 +160,9 @@ async def fill_text_input(page: Page, locator, value: str):
 
 async def open_gwn_apply_modal(page: Page):
     """복무 > 개인근무상황관리 진입 후 '신청' 버튼을 눌러 근무상황신청 모달을 연다."""
-    await page.locator("a").filter(has_text="복무 0단계 메뉴항목").first.click(timeout=8000)
+    await click(page, page.locator("a").filter(has_text="복무 0단계 메뉴항목").first, timeout=8000)
     await page.wait_for_timeout(600)
-    await page.locator("a").filter(has_text="개인근무상황관리 1단계").first.click(timeout=8000)
+    await click(page, page.locator("a").filter(has_text="개인근무상황관리 1단계").first, timeout=8000)
     await page.wait_for_timeout(1000)
 
     apply_btns = page.get_by_text("신청", exact=True)
@@ -111,7 +171,7 @@ async def open_gwn_apply_modal(page: Page):
     for i in range(n):
         cand = apply_btns.nth(i)
         if await cand.is_visible():
-            await cand.click(timeout=5000)
+            await click(page, cand, timeout=5000)
             clicked = True
             break
     if not clicked:
@@ -294,7 +354,7 @@ async def submit(page: Page, dialog, approval_line: str, dump_popup: bool = Fals
     사람에게 넘겼으면 False (그때도 예외는 던지지 않는다).
     """
     submit_btn = dialog.get_by_text("승인요청", exact=True)
-    await submit_btn.first.click(timeout=5000)
+    await click(page, submit_btn.first, timeout=5000)
     await page.wait_for_timeout(800)
     await neis.dismiss_alert_popup(page, timeout=2000)
     await neis.dismiss_notice_popup(page, timeout=1000)
@@ -308,22 +368,22 @@ async def submit(page: Page, dialog, approval_line: str, dump_popup: bool = Fals
         raise
 
     personal_line_btn = doc_dialog.get_by_text("개인결재선", exact=True)
-    await personal_line_btn.first.click(timeout=5000)
+    await click(page, personal_line_btn.first, timeout=5000)
     await page.wait_for_timeout(800)
 
     line_dialog = page.locator('[role="dialog"][aria-label="개인 결재선 지정"]')
     await line_dialog.wait_for(state="visible", timeout=10_000)
 
     preset_row = line_dialog.get_by_text(approval_line, exact=True)
-    await preset_row.first.click(timeout=5000)
+    await click(page, preset_row.first, timeout=5000)
     await page.wait_for_timeout(800)  # 오른쪽 결재선 패널 자동 로드 대기
 
     assign_btn = line_dialog.locator('[aria-label="지정"][role="button"]').first
-    await assign_btn.click(timeout=5000)
+    await click(page, assign_btn, timeout=5000)
     await page.wait_for_timeout(800)
 
     real_submit_btn = doc_dialog.locator('[aria-label="상신"][role="button"]').first
-    await real_submit_btn.click(timeout=5000)
+    await click(page, real_submit_btn, timeout=5000)
     await page.wait_for_timeout(800)
 
     # '상신' 클릭 후 확인 팝업이 최소 2개 연달아 뜬다:
@@ -369,7 +429,7 @@ async def submit(page: Page, dialog, approval_line: str, dump_popup: bool = Fals
         btn, aria, text, _html = popups[0]
         # ② 뒤에 뜨는 «상신을 완료하였습니다» 는 성공 알림이다 — 닫고 끝낸다 (2026-10-16 실측)
         if submitted and "상신을 완료하였습니다" in norm_text(text) and await btn.count() == 1:
-            await btn.click(timeout=3000)
+            await click(page, btn, timeout=3000)
             break
         step = match_popup_step(aria, text)
         if step is None:
@@ -384,7 +444,7 @@ async def submit(page: Page, dialog, approval_line: str, dump_popup: bool = Fals
             await _handover(f"확인 버튼이 {await btn.count()}개입니다.")
             return False
 
-        await btn.click(timeout=3000)
+        await click(page, btn, timeout=3000)
         step_ptr = step + 1
         if step == len(SUBMIT_POPUP_STEPS) - 1:
             submitted = True
@@ -536,6 +596,9 @@ async def run(args):
             import traceback
             print(f"\n❌  오류 발생: {e}")
             traceback.print_exc()
+            # 위젯은 출력 «마지막 몇 줄» 만 보여 준다 — 무엇에서 멈췄는지가 맨 끝에 오게 한다
+            head = [ln.strip() for ln in str(e).splitlines() if ln.strip()][:3]
+            print("❌  멈춘 곳: " + " / ".join(head)[:300], file=sys.stderr, flush=True)
             exit_code = 1
             print("\n⚠️  브라우저는 열려 있습니다. 확인 후 Enter를 누르세요.")
             try:
