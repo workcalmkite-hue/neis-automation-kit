@@ -9,10 +9,13 @@
           (main_bokmu.py). 종료 시각 기본값은 설정의 «퇴근 시각»(학교마다 다르다 — 처음 설정에서 묻는다).
   위젯이 뜰 때 두 크롬을 «최소화된 채로» 미리 로그인해 두고 5분마다 세션을 살려 두므로, 클릭은 보통 1~2초.
   오른쪽 클릭: 인증서 설정 · 미리 열어두기 켜고 끄기 · 크롬 창 닫기 · 위젯 끄기.  끌어서 옮길 수 있다.
+  위젯이 안 보이면 바탕화면 바로가기를 한 번 더 누른다 — 떠 있던 위젯이 앞으로 나온다 (멈춰 있었으면 새로 뜬다).
+  2초마다 «숨었나·화면 밖인가·맨 위가 풀렸나»를 보고 되돌린다 (모니터·프로젝터를 빼거나 해상도가 바뀐 경우).
 
 안 될 때: %LOCALAPPDATA%\\neis-automation\\widget.log 에 무슨 명령이 얼마 걸려 어떻게 끝났는지 한 줄씩 남는다.
 """
 import ctypes
+import ctypes.wintypes as wt
 import json
 import os
 import re
@@ -46,6 +49,9 @@ BTNS = [("나이스", "neis", "open", "#1b6fb5"), ("에듀파인", "edufine", "m
 INSPECT = HERE.parent / "edufine_inspect.py"      # 키트의 물품 검사검수 (조회만 / --go 등록)
 BOKMU = HERE.parent / "main_bokmu.py"             # 키트의 복무(근무상황) 상신
 BOKMU_TYPES = ["조퇴", "외출", "지각", "병조퇴", "병외출", "병지각"]
+MUTEX = "neis-edufine-widget"
+SHOW_EVENT, ACK_EVENT = "neis-edufine-widget-show", "neis-edufine-widget-shown"   # 바로가기를 또 누르면 «앞으로 나와» / «나왔어»
+GUARD_EVERY = 5                 # tick(0.4초) 다섯 번마다 = 2초마다 «보이나·화면 안인가·맨 위인가» 확인
 
 
 def load_state():
@@ -72,6 +78,87 @@ def log(what, lines, t0):
         LOG.write_text("\n".join(old + [row]) + "\n", encoding="utf-8")
     except Exception:
         pass
+
+
+def log_line(text):
+    try:
+        old = LOG.read_text(encoding="utf-8").splitlines()[-300:] if LOG.exists() else []
+        BASE.mkdir(parents=True, exist_ok=True)
+        LOG.write_text("\n".join(old + ["%s  %s" % (datetime.now().strftime("%m-%d %H:%M:%S"), text[:300])]) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+
+
+def fit_on_screen(x, y, w, h):
+    """위젯 네 귀퉁이가 모두 어떤 모니터 위에 있으면 그대로, 하나라도 밖이면 가장 가까운 모니터의 작업 영역 안으로.
+    모니터를 빼거나(TV·프로젝터) 해상도가 바뀌면 저장해 둔 자리가 화면 밖이 된다 — 그러면 위젯은 떠 있는데 안 보인다 (10/23 재현)."""
+    u = ctypes.windll.user32
+    u.MonitorFromPoint.restype = wt.HMONITOR
+    u.MonitorFromRect.restype = wt.HMONITOR
+    corners = [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
+    if all(u.MonitorFromPoint(wt.POINT(cx, cy), 0) for cx, cy in corners):     # 0 = MONITOR_DEFAULTTONULL
+        return x, y
+    hm = u.MonitorFromRect(ctypes.byref(wt.RECT(x, y, x + w, y + h)), 2)       # 2 = MONITOR_DEFAULTTONEAREST
+    mi = _MONITORINFO(cbSize=ctypes.sizeof(_MONITORINFO))
+    if not hm or not u.GetMonitorInfoW(hm, ctypes.byref(mi)):
+        return x, y
+    a = mi.rcWork
+    return max(a.left, min(x, a.right - w)), max(a.top, min(y, a.bottom - h))
+
+
+def _kernel32():
+    k = ctypes.windll.kernel32
+    k.CreateMutexW.restype = k.CreateEventW.restype = k.OpenEventW.restype = wt.HANDLE
+    k.CreateEventW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.BOOL, wt.LPCWSTR]
+    k.OpenEventW.argtypes = [wt.DWORD, wt.BOOL, wt.LPCWSTR]
+    k.SetEvent.argtypes = k.ResetEvent.argtypes = k.CloseHandle.argtypes = [wt.HANDLE]
+    k.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    return k
+
+
+def kill_other_widgets():
+    """대답 없는(멈춘) 위젯을 끈다 — 나와 내 부모(venv 의 pythonw 런처)는 빼고."""
+    try:
+        import psutil
+        me = psutil.Process()
+        mine = {me.pid} | {p.pid for p in me.parents()}
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            args = p.info.get("cmdline") or []
+            if p.info["pid"] not in mine and (p.info.get("name") or "").lower().startswith("python") \
+                    and any(a.endswith(("바로가기위젯.pyw", "바로가기위젯_상벌점.pyw")) for a in args[1:3]):
+                p.kill()
+    except Exception:
+        pass
+
+
+def single_instance():
+    """위젯은 하나만. 이미 떠 있으면 그 위젯을 «앞으로 나오게» 하고 True(나는 끝낸다)를 돌려준다.
+    예전엔 그냥 꺼졌다 — 작업표시줄 아이콘이 없는 창이라, 숨은 위젯은 설치 파일을 다시 돌려야만 되찾을 수 있었다 (10/23 제보).
+    떠 있는 위젯이 5초 안에 대답이 없으면(멈춤) 끄고 내가 대신 뜬다."""
+    k = _kernel32()
+    globals()["_mutex"] = k.CreateMutexW(None, False, MUTEX)
+    if k.GetLastError() != 183:                     # 183 = ERROR_ALREADY_EXISTS
+        return False
+    show = k.OpenEventW(0x00100002, False, SHOW_EVENT)     # SYNCHRONIZE | EVENT_MODIFY_STATE
+    ack = k.OpenEventW(0x00100002, False, ACK_EVENT)
+    if show and ack:
+        k.ResetEvent(ack)
+        k.SetEvent(show)
+        if k.WaitForSingleObject(ack, 5000) == 0:
+            return True
+    log_line("widget  떠 있는 위젯이 대답이 없어 끄고 새로 띄움")
+    kill_other_widgets()
+    for _ in range(50):                             # 죽은 프로세스의 뮤텍스가 풀릴 때까지
+        time.sleep(0.1)
+        k.CloseHandle(globals()["_mutex"])
+        globals()["_mutex"] = k.CreateMutexW(None, False, MUTEX)
+        if k.GetLastError() != 183:
+            break
+    return False
 
 
 def port_alive(port):
@@ -187,6 +274,12 @@ class Widget:
         self.locks = {"neis": threading.Lock(), "edufine": threading.Lock(), "inspect": threading.Lock()}
         self.busy = None
         self.note = ("", INK)
+        self.dragging = False
+        self.ticks = 0
+        self.root.report_callback_exception = lambda *a: log_line("ERROR  " + " ".join(str(x) for x in a[:2]))
+        k = _kernel32()
+        self.ev_show = k.CreateEventW(None, False, False, SHOW_EVENT)   # 자동 리셋
+        self.ev_ack = k.CreateEventW(None, False, False, ACK_EVENT)
 
         fr = tk.Frame(self.root, bg=BG, highlightbackground=LINE, highlightthickness=1)
         fr.pack()
@@ -221,6 +314,7 @@ class Widget:
 
     # ── 끌기 ──
     def press(self, e):
+        self.dragging = True
         self.sx, self.sy = e.x_root, e.y_root
         self.wx, self.wy = self.root.winfo_x(), self.root.winfo_y()
 
@@ -228,7 +322,43 @@ class Widget:
         self.root.geometry("+%d+%d" % (self.wx + e.x_root - self.sx, self.wy + e.y_root - self.sy))
 
     def release(self, e):
+        self.dragging = False
+        self.keep_visible()                      # 화면 밖으로 끌어 놓았으면 안으로 되돌린 뒤 저장
         save_state(x=self.root.winfo_x(), y=self.root.winfo_y())
+
+    # ── 안 보이게 되지 않게 ──
+    def hwnd(self):
+        try:
+            return int(self.root.wm_frame(), 16)
+        except Exception:
+            return 0
+
+    def keep_visible(self, raise_=False):
+        """최소화·숨김이면 다시 보이게, 화면 밖이면 안으로, 맨 위(topmost)가 풀렸으면 다시. raise_=True 면 맨 앞으로 꺼낸다.
+        저장해 둔 자리는 바꾸지 않는다 — 프로젝터를 잠깐 뺀 것 때문에 선생님이 정한 자리를 잃지 않게 (끌어서 놓을 때만 저장)."""
+        try:
+            u = ctypes.windll.user32
+            h = self.hwnd()
+            if self.root.state() != "normal" or (h and (not u.IsWindowVisible(h) or u.IsIconic(h))):
+                self.root.deiconify()
+                log_line("widget  숨어 있던 위젯을 다시 보이게 함 (state=%s)" % self.root.state())
+            self.root.update_idletasks()
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+            nx, ny = fit_on_screen(x, y, self.root.winfo_width(), self.root.winfo_height())
+            if (nx, ny) != (x, y):
+                self.root.geometry("+%d+%d" % (nx, ny))
+                log_line("widget  화면 밖(%d,%d) → 안(%d,%d)으로 옮김" % (x, y, nx, ny))
+            if h and (raise_ or not (u.GetWindowLongW(h, -20) & 0x8)):    # -20 = GWL_EXSTYLE, 8 = WS_EX_TOPMOST
+                self.root.attributes("-topmost", True)
+                u.SetWindowPos(wt.HWND(h), wt.HWND(-1), 0, 0, 0, 0, 0x0013)   # HWND_TOPMOST · NOSIZE|NOMOVE|NOACTIVATE
+        except Exception as e:
+            log_line("widget  keep_visible 오류 %r" % e)
+
+    def come_back(self):
+        """바로가기를 또 눌렀다 — 숨었든 화면 밖이든 앞으로 꺼내고 «여기 있어요» 라고 알린다."""
+        self.keep_visible(raise_=True)
+        self.say("여기 있어요!", "#2f7d4f", 3000)
+        log_line("widget  바로가기를 다시 눌러 앞으로 꺼냄")
 
     def menu(self, e):
         self.m.tk_popup(e.x_root, e.y_root)
@@ -252,6 +382,13 @@ class Widget:
         if self.busy:
             dots = "." * (int(time.time() * 2) % 3 + 1)
             self.show_status(self.busy + dots, "#8a7a68")
+        k = ctypes.windll.kernel32
+        if self.ev_show and k.WaitForSingleObject(wt.HANDLE(self.ev_show), 0) == 0:
+            self.come_back()
+            k.SetEvent(wt.HANDLE(self.ev_ack))
+        self.ticks += 1
+        if self.ticks % GUARD_EVERY == 0 and not self.dragging:
+            self.keep_visible()
         self.root.after(400, self.tick)
 
     # ── 엔진 부르기 ──
@@ -552,6 +689,7 @@ class Widget:
         threading.Thread(target=fn, daemon=True).start()
 
     def mainloop(self):
+        self.root.after(200, self.keep_visible)      # 저장해 둔 자리가 지금 화면 밖이면 바로 안으로 (크기가 잡힌 뒤)
         self.tick()
         self.root.after(WARM_EVERY, self.loop_warm)
         self.root.after(RELAUNCH_EVERY, self.loop_relaunch)
@@ -583,7 +721,6 @@ def breakaway():
 if __name__ == "__main__":
     if breakaway():
         sys.exit(0)
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "neis-edufine-widget")
-    if ctypes.windll.kernel32.GetLastError() == 183:      # 이미 떠 있다
+    if single_instance():      # 이미 떠 있다 → 그 위젯을 앞으로 꺼내고 나는 끝
         sys.exit(0)
     Widget().mainloop()

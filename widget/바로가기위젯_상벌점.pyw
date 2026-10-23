@@ -302,7 +302,6 @@ def breakaway():
 if __name__ == "__main__":
     if breakaway():
         sys.exit(0)
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "neis-edufine-widget")
-    if ctypes.windll.kernel32.GetLastError() == 183:
+    if W.single_instance():    # 이미 떠 있다 → 그 위젯을 앞으로 꺼내고 나는 끝 (기본 위젯과 같은 뮤텍스·이벤트)
         sys.exit(0)
     PointsWidget().mainloop()
