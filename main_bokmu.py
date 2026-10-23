@@ -487,7 +487,9 @@ async def run(args):
         try:
             await page.goto(neis.NEIS_URL)
             await neis.auto_login(page)
-            await page.wait_for_selector("text=학급담임", timeout=120_000)
+            # 「학급담임」은 담임이 아니면 메뉴에 없다 → 비담임 선생님은 2분 내내 기다리다 멈췄다
+            # (2026-10-23 경기 선생님 제보). 로그인 판정은 neis_session 과 같은 「로그아웃」으로 한다.
+            await page.wait_for_selector("text=로그아웃", timeout=120_000)
             await page.wait_for_timeout(1000)
             print("✅  로그인 완료")
 

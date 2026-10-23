@@ -268,7 +268,8 @@ async def auto_login(page: Page, wait_ms: int = 8_000):
     print("🔐  로그인 페이지 확인 중...")
 
     try:
-        await page.wait_for_selector("text=학급담임", timeout=3000)
+        # 「학급담임」은 비담임에게 없어서 «로그아웃» 으로 본다 (복무는 비담임도 쓴다)
+        await page.wait_for_selector("text=로그아웃", timeout=3000)
         print("✅  이미 로그인 상태")
         return
     except:
