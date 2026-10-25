@@ -16,9 +16,21 @@
 마지막에 **설정 창**을 띄운다 — ① 지역(17개 시도 목록에서 고른다) ② 인증서 이름(`C:\GPKI\Certificate\class2` 에서 찾아 채운다) ③ 인증서 암호(●로 가려진다)
 ④ 출근 시각 ⑤ 퇴근 시각 ⑥ 연락처(선택) → **[저장하고 위젯 켜기]**.
 
-**클로드로 / 이미 키트가 있으면:** `setup.ps1` 뒤에 같은 창을 띄우거나(`.venv\Scripts\pythonw.exe widget\바로가기_설정창.pyw`), 검은 창판 `.\.venv\Scripts\python.exe -X utf8 widget\바로가기_설정.py`.
+**클로드로 / 이미 키트가 있으면:** `setup.ps1` 뒤에 위젯을 **탐색기를 거쳐** 띄우고, 위젯 오른쪽 클릭 → **인증서 설정** 으로 같은 설정 창을 연다.
+
+```powershell
+Start-Process explorer.exe -ArgumentList "<키트 폴더 전체 경로>\widget\open_widget.cmd"
+```
+
+> ⚠️ **클로드 데스크톱 앱에서 설정 창·위젯을 바로 띄우지 않는다** (2026-10-25 선생님 제보 · 실측).
+> 클로드 앱은 MSIX 패키지라 앱이 띄운 프로그램이 `%LOCALAPPDATA%` 에 새로 만드는 파일을
+> `%LOCALAPPDATA%\Packages\Claude_…\LocalCache\Local\` 로 몰래 돌린다. 그래서 거기서 `바로가기_설정.py` 를 돌리면
+> `teacher_config.json` 이 클로드 앱 전용 보관함에 저장되고, 바탕화면·시작프로그램 바로가기로 뜨는 진짜 위젯은 그걸 못 읽는다
+> (10/25 선생님 PC에서 나이스 접속이 실패한 원인). `explorer.exe` 를 거치면 패키지 밖에서 뜬다 — `open_widget.cmd` 가 그 용도다.
+> 암호(자격 증명 관리자)는 이 영향을 받지 않는다.
 
 암호는 파일이 아니라 **Windows 자격 증명 관리자**에만 들어간다. 출결·복무 자동화(`setup_wizard.py`)를 이미 했으면 이 단계는 건너뛰어도 된다 — 같은 설정을 읽는다.
+단, 그 설정을 **클로드 데스크톱 앱 안에서** 했다면 위젯이 못 읽는다(위 경고) — 위젯 오른쪽 클릭 → 인증서 설정을 한 번 더 한다.
 
 끝나면 바탕화면과 시작프로그램에 **«나이스 에듀파인 바로가기»** 가 생긴다. 더블클릭하면 위젯이 뜨고, 다음 로그인부터는 저절로 뜬다.
 
@@ -46,6 +58,7 @@
 |---|---|
 | `바로가기위젯.pyw` | 단추 여섯 (tkinter). [복무]는 입력 창 → `main_bokmu.py` 상신. 위젯이 뜰 때·5분마다 엔진 `warm` 을 부른다. [검수]는 `edufine_inspect.py`(조회 → 확인 → `--go`) |
 | `바로가기_엔진.py` | `neis open\|warm` · `edufine main\|open\|cnrs\|warm` · `close`. 로그인은 키트의 `neis_session.login()` · `edufine_common.login()` 그대로 |
+| `open_widget.cmd` | 클로드 앱에서 위젯을 띄울 때 `explorer.exe` 로 여는 파일 — 클로드 앱 전용 보관함을 피한다 |
 | `바로가기_설정창.pyw` | 마우스로 쓰는 설정 창 (클로드 없이 설치 · 위젯 오른쪽 클릭 «인증서 설정») |
 | `바로가기_설정.py` | 검은 창판 설정 + `save_settings()`(저장)·`make_shortcuts()`(바로가기 두 개). 설정 창도 이걸 쓴다 |
 | `install.ps1` | `바로가기위젯_설치.cmd` 가 부른다 — `setup.ps1 -Widget` → 설정 창 |
