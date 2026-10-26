@@ -135,6 +135,10 @@ Write-Host "  OK" -ForegroundColor Green
 
 # 4) Playwright
 Write-Host "[4/4] 브라우저 제어 도구 설치 중..."
+# 경남 등 일부 학교망은 HTTPS 를 교육청 인증서(GNE_CERT)로 다시 감싼다. playwright 다운로더(Node)는
+#   윈도우 인증서 목록을 안 봐서 SELF_SIGNED_CERT_IN_CHAIN 으로 실패한다 → 윈도우 목록도 같이 믿게 한다.
+#   기본 목록에 «더하는» 것이라 다른 지역엔 영향 없다 (2026-10-26 실측: 121개 → 121+152개, 경남 학교망에서 설치 성공 제보)
+$env:NODE_USE_SYSTEM_CA = "1"
 # 약 300MB 라 받다가 시간 초과로 끊길 때가 있다 — 두 번까지 다시 받는다 (2026-10-14 실측: 두 번째에 통과)
 foreach ($try in 1..3) {
     & $venvPy -m playwright install chromium
