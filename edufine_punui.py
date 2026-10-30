@@ -381,6 +381,19 @@ def cmd_fill(page, plan, save, request=False):
     if not bg:
         raise SystemExit("예산선택 창의 표를 못 찾았습니다. 캡처를 보여 주세요.")
     hits = page.evaluate(JS_ROWHITS, {"gid": bg, "needle": plan["예산"]})
+    # ★ 예산표는 가상 스크롤이라 화면에 그려진 20여 줄만 DOM 에 있다 — 아래쪽 부서(창의체험교육부 등)는
+    #   굴려야 나온다 (2026-10-30 실측: 학급운영비 줄이 «0개» 로 멈춤)
+    if not hits:
+        body = page.locator('[id="%s.body"]' % bg).first
+        bb = body.bounding_box() if body.count() else None
+        if bb:
+            page.mouse.move(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
+            for _ in range(40):
+                page.mouse.wheel(0, 300)
+                page.wait_for_timeout(350)
+                hits = page.evaluate(JS_ROWHITS, {"gid": bg, "needle": plan["예산"]})
+                if hits:
+                    break
     if len(hits) != 1:
         E.log("⛔ 예산 %r 에 맞는 줄이 %d개입니다. 선생님께 어느 줄인지 여쭤보세요." % (plan["예산"], len(hits)))
         for r in page.evaluate(JS_ROWS, bg):
