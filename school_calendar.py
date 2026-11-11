@@ -16,7 +16,7 @@ import urllib.request
 from datetime import date
 
 # 학교망이 HTTPS를 교육청 인증서로 다시 감싸면(HTTPS 검사) 파이썬 기본 인증서 목록으로는
-# CERTIFICATE_VERIFY_FAILED 가 난다 — 윈도우 인증서 저장소를 쓰게 한다 (2026-11-11, 한밭고 «학교를 찾지 못했습니다»)
+# CERTIFICATE_VERIFY_FAILED 가 난다 — 윈도우 인증서 저장소를 쓰게 한다 (2026-11-11 «학교를 찾지 못했습니다» 제보)
 try:
     import truststore
     truststore.inject_into_ssl()

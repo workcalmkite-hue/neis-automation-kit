@@ -38,7 +38,7 @@ MINUTE_STEP = 5  # 시작/종료 '분' 콤보박스는 5분 단위로만 선택 
 # 화면이 데이터를 불러오는 동안 .isloading-overlay 가 전체를 덮는다. 그 사이 누르면
 # 클릭이 가림막에 먹히고, 5초 timeout 이 지나면 «intercepts pointer events» 로 죽는다.
 # 학교 밖(EVPN)·느린 회선에서는 이 가림막이 5초를 넘기기 일쑤다
-# (2026-10-23 장충고 선생님 제보 — 상신 중 이 오류로 멈춤). 그래서 누르기 전에 걷힐 때까지 기다린다.
+# (2026-10-23 선생님 제보 — 상신 중 이 오류로 멈춤). 그래서 누르기 전에 걷힐 때까지 기다린다.
 LOAD_OVERLAY = ".isloading-overlay, [class*='isloading'], [class*='loading-overlay'], .blockUI"
 
 # 「보이는가」만 보면 안 된다 — pointer-events:none 인 껍데기는 클릭을 안 막는다.

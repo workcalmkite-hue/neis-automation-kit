@@ -290,19 +290,19 @@ def main():
     print("   출결을 안 쓰시면 그냥 Enter.")
     school = {k: old.get(k, "") for k in ("school_office", "school_code", "school_name")}
     while True:
-        q = ask("학교 이름 (예: 원묵중)", school["school_name"], required=False)
+        q = ask("학교 이름 (예: ○○중)", school["school_name"], required=False)
         if not q or q == school["school_name"]:
             break
         # ★ y/n 같은 짧은 답은 학교 이름이 아니다 — 옛 판은 6번 질문이 안 보여서 여기에 y/n 을 쳤고,
         #   «n» 이 든 학교 하나가 묻지도 않고 저장됐다 (2026-11-06 윈도우 실기기 재현)
         if q.strip().lower() in ("y", "n", "yes", "no", "예", "네", "아니요", "아니오", "ㅛ", "ㅜ") or len(q.strip()) < 2:
-            print("  ⏭  학교 이름이 아니라서 이 칸은 건너뜁니다. (학교 이름은 두 글자 이상, 예: 원묵중)")
+            print("  ⏭  학교 이름이 아니라서 이 칸은 건너뜁니다. (학교 이름은 두 글자 이상, 예: ○○중)")
             break
         try:
             found_s = school_calendar.find_school(q, school_calendar.office_from_neis_url(neis_url)) \
                 or school_calendar.find_school(q)
         except Exception as e:
-            # 0건과 구분한다 — 이 칸은 «학교가 없다»가 아니라 «검색 서버에 못 갔다» (2026-11-11 한밭고)
+            # 0건과 구분한다 — 이 칸은 «학교가 없다»가 아니라 «검색 서버에 못 갔다» (2026-11-11 제보)
             print(f"  ⚠️  나이스 학교 검색 서버에 연결하지 못했습니다 — {school_calendar.why(e)}")
             print(f"      ({type(e).__name__}: {e})")
             print("      학교 이름이 틀린 게 아닙니다. 그냥 Enter 로 넘어가고, 나중에 설정 마법사를 다시 돌려 학교만 넣어도 됩니다.")
@@ -328,7 +328,7 @@ def main():
     calendars = old.get("calendars", {})
     # ★ 구글 열쇠(oauth_client.json)가 없어도 묻는다 — 화면에 «담임이면 y»라고 적혀 있으니 담임은 y 를 누른다.
     #   그때 오류로 끝내지 말고 «출결 연결은 나중에»로 넘긴다. 열쇠는 연수 뒤 따로 받는 분이 많다
-    #   (2026-10-21 매그넷고: y → «파일이 없습니다»로 통째로 끝남 / 2026-11-06: 열쇠 없는데 질문이 안 보여 헷갈림)
+    #   (2026-10-21 연수: y → «파일이 없습니다»로 통째로 끝남 / 2026-11-06: 열쇠 없는데 질문이 안 보여 헷갈림)
     if not _OAUTH_CLIENT_FILE.exists():
         print("   구글 열쇠가 아직 없어도 y 를 누르셔도 됩니다 — 오류 없이 넘어가고 나머지는 다 저장됩니다.")
     use_calendar = ask("출결 자동화도 쓰시겠습니까? (y/n)",
