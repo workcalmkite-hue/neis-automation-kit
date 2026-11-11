@@ -302,7 +302,10 @@ def main():
             found_s = school_calendar.find_school(q, school_calendar.office_from_neis_url(neis_url)) \
                 or school_calendar.find_school(q)
         except Exception as e:
-            print(f"  ⚠️  학교를 찾지 못했습니다 (인터넷 확인): {e}  — 그냥 Enter 로 넘어가도 됩니다.")
+            # 0건과 구분한다 — 이 칸은 «학교가 없다»가 아니라 «검색 서버에 못 갔다» (2026-11-11 한밭고)
+            print(f"  ⚠️  나이스 학교 검색 서버에 연결하지 못했습니다 — {school_calendar.why(e)}")
+            print(f"      ({type(e).__name__}: {e})")
+            print("      학교 이름이 틀린 게 아닙니다. 그냥 Enter 로 넘어가고, 나중에 설정 마법사를 다시 돌려 학교만 넣어도 됩니다.")
             continue
         if not found_s:
             print("  ⚠️  그 이름의 학교가 없습니다. «중학교»를 빼고 짧게 쳐 보세요.")
