@@ -17,7 +17,10 @@
 import ctypes
 import ctypes.wintypes as W
 import re
+import sys
 import time
+
+sys.coinit_flags = 2   # STA — 기안기 안의 IE 문서(COM)는 STA 에서만 잡힌다. pywinauto 가 먼저 MTA 로 잡으면 «해당 인터페이스를 지원하지 않습니다» (2026-11-12)
 
 import edufine_common as E
 
@@ -32,6 +35,8 @@ except ImportError:                                  # 예전에 설치한 폴�
     raise SystemExit(
         "기안기 창을 다루는 부품(pywinauto)이 아직 안 깔려 있습니다. 한 번만 깔아 주세요:\n"
         "  .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt")
+
+import edufine_quiet as Q                             # 2026-11-12 «조용한 입력» — 진짜 마우스·키보드 0, 창도 앞으로 안 꺼냄
 
 IE_DLG = "Internet Explorer_TridentDlgFrame"
 MSG_TITLE = "웹 페이지 메시지"
@@ -206,93 +211,52 @@ def close_card_popup(pop):
         pass
 
 
+# ── 조용한 입력 (2026-11-12) ──────────────────────────────────────
+# 예전 판은 좌표 클릭·↓ 키·클립보드 붙여넣기로 채워서 그동안 선생님이 컴퓨터를 못 썼다.
+# 지금은 기안기 안의 IE 문서를 COM 으로 잡아 페이지 함수를 부른다 (edufine_quiet.py 맨 위 설명).
+#   과제카드 = nexacro API · 공개여부 = 라디오 click() · 결재선 = select 값 · 알림창 = WM_COMMAND
+# 기안기 창은 «본문 컨트롤이 만들어질 때까지» 맨 뒤에 펼쳐 두고(sink) 그다음 최소화(tuck)한다.
+def doc(h):
+    return Q.ready(h)
+
+
 def set_card(h, card):
-    w = gian_window(h)
-    if norm(card) in norm(card_text(w)):
-        return card_text(w)
-    img = [c for c in w.descendants(control_type="Image") if "과제카드선택" in (c.window_text() or "")]
-    if not img:
-        raise Stop("과제카드 돋보기를 못 찾았습니다")
-    before = set(windows(IE_DLG))
-    mouse.click(coords=center(img[0]))
-    pop = None
-    end = time.monotonic() + 40                          # 실측: 뜨는 데 12초 넘게 걸렸다
-    while time.monotonic() < end and not pop:
-        time.sleep(0.4)
-        new = [x for x in windows(IE_DLG) if x not in before]
-        pop = new[-1] if new else None
-    if not pop:
-        raise Stop("과제카드선택 창이 40초 안에 안 떴습니다")
-    time.sleep(1.2)                                      # 목록이 그려질 시간
-    focus(pop)
-    # 카드 이름이 «[단위과제] 카드명» 꼴이면 검색은 대괄호 안(단위과제)으로 하고, 줄은 카드명까지 맞는 것을 고른다
+    d = doc(h)
     m = re.match(r"\s*\[([^\]]+)\]\s*(.*)", card)
-    query, want = (m.group(1), card) if m else (card, card)
-    rel_click(pop, 350, 176)                             # 단위과제카드명 칸
-    paste(query)
-    rel_click(pop, 734, 131, 3.0)                        # [조회]
-    rows = card_rows(pop)                                # 창 안 글자를 읽어 맞는 줄을 고른다 (2026-10-06: 과제카드 창은 UIA 로 읽힌다)
-    hit = [] if rows is None else (
-        [r for r in rows if norm(want) in norm(r[0])] or ([] if m else [r for r in rows if norm(query) in norm(r[0])]))
-    if rows is not None and not hit:
-        shot(pop, "과제카드_없음.png")
-        close_card_popup(pop)
-        raise Stop("과제카드 '%s' 가 내 목록에 없습니다. 검색 결과: %s\n"
-                   "  (과제카드 창에는 «내가 쓸 수 있는» 카드만 나옵니다 — 지난 내 공문에 쓰인 카드 이름을 적어 주세요)"
-                   % (card, " / ".join(r[0] for r in rows) or "없음"))
-    left, top, _, _ = win32gui.GetWindowRect(pop)
-    if hit:
-        mouse.click(coords=(left + 44, hit[0][1]))       # 그 줄의 선택 칸
-        time.sleep(0.5)
-    else:
-        rel_click(pop, 44, 281, 0.5)                     # 글자를 못 읽으면 예전처럼 첫 줄
-    shot(pop, "과제카드.png")
-    rel_click(pop, 714, 531, 1.0)                        # [확인]
-    for _ in range(20):
-        if not win32gui.IsWindow(pop) or not win32gui.IsWindowVisible(pop):
-            break
-        time.sleep(0.3)
-    got = card_text(gian_window(h))
-    if norm(card) not in norm(got):
-        raise Stop("과제카드가 '%s' 로 안 들어갔습니다 (지금: '%s'). 이름을 에듀파인 목록 글자 그대로 적어 주세요" % (card, got))
+    query = m.group(1) if m else card
+    try:
+        got = Q.choose_card(d, query) if not m else _choose_exact(d, query, card)
+    except SystemExit as ex:
+        raise Stop(str(ex))
+    if not got:
+        raise Stop("과제카드가 '%s' 로 안 들어갔습니다. 이름을 에듀파인 목록 글자 그대로 적어 주세요" % card)
     return got
 
 
-def click_label(h, label):
-    """라디오·체크박스는 크기가 0 이라 옆 글자의 왼쪽 끝을 누른다 (맨 위 줄 = 문서정보 칸)."""
-    texts = [c for c in gian_window(h).descendants(control_type="Text") if (c.window_text() or "") == label]
-    if not texts:
-        raise Stop("'%s' 글자를 못 찾았습니다" % label)
-    t = min(texts, key=lambda c: (c.rectangle().top, c.rectangle().left)).rectangle()
-    mouse.click(coords=(t.left + 7, (t.top + t.bottom) // 2))
-    time.sleep(1.0)
+def _choose_exact(d, query, want):
+    """«[단위과제] 카드명» 꼴 — 검색은 대괄호 안, 줄은 전체 글자가 맞는 것."""
+    got = Q.choose_card(d, query)
+    if norm(want) not in norm(got):
+        raise Stop("과제카드가 '%s' 가 아니라 '%s' 로 잡혔습니다" % (want, got))
+    return got
 
 
 def set_partial(h, what, reason=""):
-    """부분공개(6) · 비공개(5) 처럼 «호» 가 붙은 값. 정보공개법 제9조 제1항 — 5호 의사결정 과정 · 6호 개인정보 · 7호 영업비밀.
-    호 체크박스와 공개제한사유 칸은 «부분공개/비공개» 를 고른 뒤에만 쓸 수 있다 (2026-10-06 공용서식 실측)."""
+    """부분공개(6) · 비공개(5) 처럼 «호» 가 붙은 값. 정보공개법 제9조 제1항 — 5호 의사결정 과정 · 6호 개인정보 · 7호 영업비밀."""
     m = re.fullmatch(r"(부분공개|비공개)\((\d)\)", norm(what))
     if not m:
         raise Stop("공개여부 '%s' 를 모르겠습니다 — 공개 · 비공개 · 부분공개(6) · 비공개(5) 꼴로 적어 주세요" % what)
     kind, ho = m.groups()
-    click_label(h, kind)
-    want = {"부분공개": "othbcLmtt2", "비공개": "othbcLmtt3"}[kind]
-    w = gian_window(h)
-    if not any(c.element_info.automation_id == want and c.is_selected() for c in w.descendants(control_type="RadioButton")):
-        raise Stop("공개여부가 '%s' 로 안 골라졌습니다" % kind)
-    box = [c for c in w.descendants(control_type="CheckBox") if c.element_info.automation_id == "othbcAt" + ho]
-    if not box:
+    rid = {"부분공개": "othbcLmtt2", "비공개": "othbcLmtt3"}[kind]
+    d = doc(h)
+    r = Q.js(d, """var r=document.getElementById('%s'); r.click();
+        var b=document.getElementById('othbcAt%s'); if(!b)return 'NOBOX'; if(!b.checked)b.click();
+        var e=document.getElementById('othbcLmttResn'); if(e && %s){e.value=%s; var ev=document.createEvent('HTMLEvents'); ev.initEvent('change',true,true); e.dispatchEvent(ev);}
+        return r.checked+'|'+b.checked;""" % (rid, ho, "true" if reason else "false", Q.json.dumps(reason)))
+    if r == "NOBOX":
         raise Stop("공개제한근거 %s호 칸을 못 찾았습니다" % ho)
-    if box[0].get_toggle_state() != 1:
-        click_label(h, "%s호" % ho)
-    box = [c for c in gian_window(h).descendants(control_type="CheckBox") if c.element_info.automation_id == "othbcAt" + ho]
-    if box[0].get_toggle_state() != 1:
-        raise Stop("공개제한근거 %s호에 체크가 안 됐습니다" % ho)
-    if reason:
-        e = [c for c in gian_window(h).descendants(control_type="Edit") if c.element_info.automation_id == "othbcLmttResn"]
-        if e:
-            e[0].click_input()
-            paste(reason)
+    if r != "true|true":
+        raise Stop("공개여부 '%s' 가 안 골라졌습니다 (%s)" % (what, r))
 
 
 def set_disclosure(h, what, reason=""):
@@ -300,29 +264,18 @@ def set_disclosure(h, what, reason=""):
         return set_partial(h, what, reason)
     if what not in DISCLOSURE:
         raise Stop("공개여부 '%s' 는 자동으로 고르지 않습니다 (공개·비공개·부분공개(6) 꼴)" % what)
-    w = gian_window(h)
-    texts = [c for c in w.descendants(control_type="Text") if (c.window_text() or "") == what]
-    if not texts:
-        raise Stop("공개여부 '%s' 글자를 못 찾았습니다" % what)
-    t = min(texts, key=lambda c: c.rectangle().top).rectangle()    # 맨 위 줄이 문서정보의 공개여부 (아래는 첨부 줄)
-    mouse.click(coords=(t.left + 7, (t.top + t.bottom) // 2))       # 라디오 자체는 크기가 0 이라 글자 왼쪽 끝
-    time.sleep(1.0)
-    for c in gian_window(h).descendants(control_type="RadioButton"):
-        if c.element_info.automation_id == DISCLOSURE[what] and c.is_selected():
-            return
-    raise Stop("공개여부가 '%s' 로 안 골라졌습니다" % what)
+    r = Q.js(doc(h), "var r=document.getElementById('%s'); r.click(); return r.checked;" % DISCLOSURE[what])
+    if r != "true":
+        raise Stop("공개여부가 '%s' 로 안 골라졌습니다" % what)
 
 
-def preset_value(w):
-    cb = [c for c in w.descendants(control_type="ComboBox") if c.element_info.automation_id == "streReportCours"]
-    if not cb:
-        raise Stop("나의결재선 칸을 못 찾았습니다")
-    return cb[0], (cb[0].legacy_properties().get("Value") or "")
+def preset_names(h):
+    return Q.js(doc(h), "var s=document.getElementById('streReportCours'); var o=[]; for(var i=0;i<s.options.length;i++)o.push(s.options[i].text); return o.join('|');").split("|")
 
 
 def absent_notice():
-    """결재선에 부재중인 결재자(출장 등)가 있으면 에듀파인이 «결재경로설정» 창 + «…부재중입니다» 알림을 저절로 띄운다.
-    그 알림 글자를 돌려준다 (없으면 None). 창은 건드리지 않는다 — 이 창의 [삭제] 는 저장된 결재선을 지운다."""
+    """결재선에 부재중인 결재자(출장 등)가 있으면 «…부재중입니다» 알림이 저절로 뜬다. 그 글자 (없으면 None).
+    그때 함께 뜨는 «결재경로설정» 창은 건드리지 않는다 — 그 창의 [삭제] 는 저장된 결재선을 지운다."""
     for m in windows("#32770", MSG_TITLE, wxs_pids()):
         t = msg_text(m)
         if "부재" in t:
@@ -331,68 +284,52 @@ def absent_notice():
 
 
 def set_preset(h, name):
-    """나의결재선 목록은 그림으로 떠서 글자를 못 읽는다 → 닫힌 채로 ↓ 를 눌러 한 칸씩 내려가며 값이 맞는지 본다."""
-    cb, cur = preset_value(gian_window(h))
-    if norm(cur) == norm(name):
-        return
-    r = cb.rectangle()
-    mouse.click(coords=(r.left + 30, (r.top + r.bottom) // 2))      # 열리면서 포커스
-    time.sleep(0.5)
-    keyboard.send_keys("{ESC}")                                     # 닫고 포커스만 남긴다
-    time.sleep(0.3)
-    keyboard.send_keys("{HOME}")
-    time.sleep(0.8)
-    seen = []
-    same = 0
-    for _ in range(40):
+    d = doc(h)
+    names = preset_names(h)
+    if not any(norm(n) == norm(name) for n in names):
+        raise Stop("나의결재선에 '%s' 가 없습니다. 있는 것: %s" % (name, " / ".join(n for n in names if n)))
+    exact = next(n for n in names if norm(n) == norm(name))
+    try:
+        Q.set_preset(d, exact)
+    except SystemExit as ex:
+        raise Stop(str(ex))
+    for _ in range(10):
+        time.sleep(0.5)
         t = absent_notice()
-        if t:          # 부재 알림이 뜨면 ↓ 가 그 창에 먹어서 엉뚱한 결재선이 골라질 수 있다 → 멈춘다 (2026-10-14 교감 출장일 실측)
-            raise Stop("결재선을 고르다가 «부재중» 알림이 떴습니다: %s — "
-                       "  결재자가 출장·휴가 중인 날은 자동으로 고르지 않습니다. 기안 창에서 직접 고르시거나 복귀 뒤 다시 해 주세요." % t[:120])
-        _, cur = preset_value(gian_window(h))
-        if norm(cur) == norm(name):
-            time.sleep(2.0)                                         # 결재경로 표가 다시 그려질 시간
-            t = absent_notice()
-            if t:
-                raise Stop("고른 결재선에 부재중인 결재자가 있습니다: %s — 기안 창에서 확인해 주세요" % t[:120])
+        if t:
+            raise Stop("고른 결재선에 부재중인 결재자가 있습니다: %s — 기안 창에서 확인해 주세요" % t[:120])
+        if any(Q.field(d, "직위.%d" % i).strip() for i in range(2, 5)):
             return
-        if seen and cur == seen[-1]:
-            same += 1                                               # ↓ 가 가끔 안 먹는다 (2026-10-06 실측) — 세 번 같아야 맨 아래
-            if same >= 3:
-                break
-        else:
-            same = 0
-            seen.append(cur)
-        keyboard.send_keys("{DOWN}")
-        time.sleep(0.8)
-    raise Stop("나의결재선에 '%s' 가 없습니다. 있는 것: %s" % (name, " / ".join(seen)))
 
 
 def route_rows(h):
-    """결재경로 표의 줄들 — [순번, 처리방법, 직위, 처리자, 상태, …]."""
-    w = gian_window(h)
-    ts = [(c.rectangle(), (c.window_text() or "").strip()) for c in w.descendants(control_type="Text")]
-    head = [r.top for r, t in ts if t == "순번"]
-    tail = [r.top for r, t in ts if t == "시행정보"]
-    if not head or not tail:
-        return []
-    top, bottom = min(head) + 10, min(tail) - 5
-    rows = {}
-    for r, t in ts:
-        if t and top < r.top < bottom and r.left < 760 and "결재경로표" not in t and t != "\xa0":
-            rows.setdefault(r.top, []).append(t)
-    return [rows[k] for k in sorted(rows) if len(rows[k]) >= 4]     # «수신자지정» 같은 단추 글자는 뺀다
+    """결재란(문서 누름틀)의 직위 — [순번, 직위]. 창을 최소화해도 읽힌다 (예전 판은 화면 좌표로 표를 읽었다)."""
+    d = doc(h)
+    out = []
+    for i in range(1, 5):
+        p = Q.field(d, "직위.%d" % i).strip()
+        if p:
+            out.append([str(i), "결재", p, "", ""])
+    if out:
+        return out
+    # 본문 편집기가 없는 창이면 결재경로 표(«순번»이 머리인 표)의 줄을 DOM 에서 읽는다
+    txt = Q.js(d, """var t=document.getElementsByTagName('table'); var o=[];
+        for(var i=0;i<t.length;i++){var h=t[i].innerText||''; if(h.indexOf('순번')<0||h.indexOf('처리방법')<0)continue;
+          var r=t[i].rows; for(var j=0;j<r.length;j++){var c=[]; for(var k=0;k<r[j].cells.length;k++)c.push((r[j].cells[k].innerText||'').replace(/\\s+/g,' ').trim());
+            if(c.length>=4 && /^\\d+$/.test(c[0]))o.push(c.join('\\t'));}
+          if(o.length)break;}
+        return o.join('|');""")
+    return [row.split("\t") for row in txt.split("|") if row]
 
 
 # ── 결재올림 ─────────────────────────────────────────────────────
 def submit(h, timeout=90):
-    w = gian_window(h)
-    btn = [c for c in w.descendants(control_type="Hyperlink") if c.element_info.automation_id == "sanctn"]
-    if not btn:
-        raise Stop("[결재올림] 단추를 못 찾았습니다")
+    """⚠️ 2026-11-12 조용한 입력으로 바꾼 뒤 실제 결재올림으로는 아직 안 돌려 봤다 — 첫 실행은 지켜볼 것."""
+    d = doc(h)
     pids = wxs_pids()
-    focus(h)
-    mouse.click(coords=center(btn[0]))
+    seen = set(windows(IE_DLG, None, pids))
+    up = "setTimeout(function(){fncSanctn()},10); return 1"
+    Q.js(d, up)
     done = set()
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -401,31 +338,36 @@ def submit(h, timeout=90):
             txt = msg_text(m)
             E.log("  알림: %s" % txt[:90])
             if "수신자를 지정하지 않으면 내부결재로 처리" in txt and "내부결재" not in done:
-                done.add("내부결재"); press_msg(m); break
+                done.add("내부결재"); Q.press(m); break
             if "원문공개 문서는 바로 국민에게 공개" in txt and "원문공개" not in done:
-                done.add("원문공개"); press_msg(m); break
+                done.add("원문공개"); Q.press(m); break
             if "정상적으로 처리되었습니다" in txt:
-                press_msg(m)
+                Q.press(m)
                 for _ in range(30):                         # 기안기가 스스로 닫힌다
                     if not win32gui.IsWindow(h):
                         break
                     time.sleep(0.3)
                 return True
-            shot(m, "품의_모르는알림.png")
             raise Stop("모르는 알림이라 누르지 않았습니다: %s" % txt[:150])
-        for d in windows(IE_DLG, None, pids):
-            t = win32gui.GetWindowText(d)
-            if "문서처리" in t:
-                if "문서처리" in done:
-                    continue                                # 누른 창이 닫히는 중
-                done.add("문서처리")
-                time.sleep(0.8)
-                shot(d, "품의_결재올림창.png")
-                focus(d)
-                rel_click(d, 712, 129, 1.0)                 # 「결재올림」 창 [확인] — 이 뒤로 [결재올림] 재클릭 금지
+        for dlg in windows(IE_DLG, None, pids):
+            if dlg in seen:
+                continue
+            t = win32gui.GetWindowText(dlg)
+            if "관인" in t and "관인" not in done:
+                time.sleep(1.5)
+                if Q.click_text_in(Q.doc_of(dlg), "확인") != "OK":
+                    raise Stop("관인선택 창에서 [확인] 을 못 찾았습니다 — 손으로 눌러 주세요")
+                done.add("관인"); seen.add(dlg)
+                time.sleep(2)
+                Q.js(d, up)                                 # 관인을 고른 뒤 한 번 더 눌러야 다음 창
+                continue
+            if "문서처리" in t and "문서처리" not in done:
+                time.sleep(1.5)
+                if Q.click_text_in(Q.doc_of(dlg), "확인") != "OK":
+                    raise Stop("「결재올림」 창에서 [확인] 을 못 찾았습니다 — 손으로 눌러 주세요")
+                done.add("문서처리"); seen.add(dlg)        # 이 뒤로 결재올림 재클릭 금지
                 E.log("  「결재올림」 창 [확인]")
                 continue
-            shot(d, "품의_모르는창.png")
             raise Stop("모르는 창이라 누르지 않았습니다: %s" % t)
     if "문서처리" in done:
         raise Stop("올리긴 했는데 %d초 안에 «정상적으로 처리» 를 못 봤습니다. "
@@ -435,16 +377,19 @@ def submit(h, timeout=90):
 
 def fill_and_submit(plan, wait_timeout=60):
     """기안기가 뜨기를 기다려 과제카드·공개여부·결재선을 채우고 [결재올림]. 결과 dict 를 돌려준다."""
+    prev = win32gui.GetForegroundWindow()           # 선생님이 쓰던 창 — 기안기가 앞창을 가져가면 돌려준다
     h = wait_gian(wait_timeout)
     if not h:
         raise Stop("기안기 창이 %d초 안에 안 떴습니다 (기안기 프로그램 Kedufine 이 깔려 있는지 보세요)" % wait_timeout)
-    E.log("기안기 창이 떴습니다 — 과제카드·공개여부·결재선을 채웁니다")
-    time.sleep(1.5)
+    E.log("기안기 창이 떴습니다 — 과제카드·공개여부·결재선을 채웁니다 (마우스·키보드는 그대로 쓰셔도 됩니다)")
+    Q.sink(h)                                       # 맨 뒤로 — 본문 컨트롤이 준비될 때까지는 펼쳐 둔다
     try:
-        gian_window(h).maximize()
-    except Exception:
-        pass
-    focus(h)
+        Q.ready(h)
+    except SystemExit as ex:
+        raise Stop(str(ex))
+    Q.tuck(h)                                       # 준비됐으면 작업표시줄로
+    if prev != h:
+        Q.give_back(prev)
     got = set_card(h, plan["과제카드"])
     E.log("  과제카드: %s" % got)
     set_disclosure(h, plan["공개여부"])
@@ -452,10 +397,9 @@ def fill_and_submit(plan, wait_timeout=60):
     set_preset(h, plan["결재선"])
     rows = route_rows(h)
     for r in rows:
-        E.log("  결재경로: %s" % " | ".join(r[:5]))
+        E.log("  결재경로: %s" % " | ".join(r[:3]))
     if len(rows) < 2:
         raise Stop("결재경로에 기안자 말고는 아무도 없습니다 — '%s' 결재선을 확인해 주세요" % plan["결재선"])
-    shot(h, "품의_결재올림전.png")
     E.log("\n⚠️  [결재올림] 을 누릅니다")
     submit(h)
-    return {"결재경로": [" ".join(r[:4]) for r in rows]}
+    return {"결재경로": [" ".join(r[:3]) for r in rows]}
