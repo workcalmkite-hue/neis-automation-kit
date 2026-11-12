@@ -147,7 +147,9 @@ JS_CELLHAS = r"""
   const e = document.getElementById(a.cid);
   if (!e) return false;
   const ed = [...document.querySelectorAll('input')].find(x => (x.id || '').indexOf(a.cid + '.') === 0);
-  return (((ed ? ed.value : '') + ' ' + (e.innerText || '')).replace(/,/g, '')).indexOf(a.want) >= 0;
+  // 6줄을 넘으면 편집기 id 가 칸 번호와 어긋날 수 있다 — 지금 포커스가 있는 입력칸 값도 본다 (2026-11-12)
+  const ae = document.activeElement, av = (ae && ae.tagName === 'INPUT' && (ae.id || '').indexOf(a.cid.split('.body.')[0]) === 0) ? ae.value : '';
+  return (((ed ? ed.value : '') + ' ' + av + ' ' + (e.innerText || '')).replace(/,/g, '')).indexOf(a.want) >= 0;
 }
 """
 
@@ -295,10 +297,31 @@ def type_into(page, suffix, text):
     return el.input_value()
 
 
+JS_ROW_SLOT = r"""
+(a) => {
+  for (const e of document.querySelectorAll('div[id^="' + a.gid + '.body.gridrow_"]')) {
+    const m = e.id.match(/gridrow_(\d+)$/); if (!m) continue;
+    const s = +m[1], c = document.getElementById(e.id + '.cell_' + s + '_2');
+    if (c && (c.innerText || '').trim() === String(a.no)) return s;
+  }
+  return null;
+}
+"""
+
+
+def row_slot(page, gid, row):
+    """품목 표는 가상 스크롤이라 gridrow_N 의 N 이 «데이터 줄 번호» 가 아니라 «화면 칸 번호» 다.
+    6줄을 넘으면 칸이 재사용된다 → 순번 칸 글자(row+1)로 실제 칸을 찾는다 (2026-11-12 실측:
+    25줄 품의에서 7번째 줄부터 gridrow_6.. 을 찾다가 전부 빈칸으로 남음). 못 찾으면 row 그대로."""
+    s = page.evaluate(JS_ROW_SLOT, {"gid": gid, "no": row + 1})
+    return row if s is None else s
+
+
 def put_cell(page, gid, row, col, value):
     """품목 표 한 칸. 칸을 눌러도 편집기가 안 열린다 → 누르고 바로 타이핑 → Enter → Tab 으로 확정.
     오른쪽 Quick Link 가 칸을 덮으면 표를 가로로 굴린다 (2026-09-17 실측)."""
-    cid = "%s.body.gridrow_%d.cell_%d_%d" % (gid, row, row, col)
+    slot = row_slot(page, gid, row)
+    cid = "%s.body.gridrow_%d.cell_%d_%d" % (gid, slot, slot, col)
     pt = page.evaluate(JS_VISIBLE_POINT, cid)
     if not pt:
         return False
@@ -332,6 +355,9 @@ def put_cell(page, gid, row, col, value):
     page.keyboard.press("Tab")
     page.wait_for_timeout(450)
     got = page.evaluate(JS_CELLTEXT, cid) or ""
+    if want not in got.replace(",", ""):          # 칸이 재사용돼 번호가 바뀌었을 수 있다 → 순번으로 다시 찾는다
+        s2 = row_slot(page, gid, row)
+        got = page.evaluate(JS_CELLTEXT, "%s.body.gridrow_%d.cell_%d_%d" % (gid, s2, s2, col)) or ""
     return want in got.replace(",", "")
 
 
@@ -455,7 +481,8 @@ def cmd_fill(page, plan, save, request=False):
                 bad.append("%d번째 줄 %s" % (n + 1, {3: "내용", 5: "규격", 6: "수량", 8: "단가"}[col]))
         # 마지막 값은 다른 칸으로 옮겨야 확정된다 — 편집이 안 되는 «순번» 칸을 한 번 누른다
         # (내용 칸을 누르면 편집기가 다시 열려서 표 글자에 안 보인다 — 2026-09-18 실측)
-        pt = page.evaluate(JS_VISIBLE_POINT, "%s.body.gridrow_%d.cell_%d_2" % (pid, n, n))
+        s = row_slot(page, pid, n)
+        pt = page.evaluate(JS_VISIBLE_POINT, "%s.body.gridrow_%d.cell_%d_2" % (pid, s, s))
         if pt and not pt.get("covered"):
             nexa_click(page, pt["x"], pt["y"])
         page.wait_for_timeout(900)
