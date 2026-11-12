@@ -269,6 +269,14 @@ def set_disclosure(h, what, reason=""):
         raise Stop("공개여부가 '%s' 로 안 골라졌습니다" % what)
 
 
+def preset_value(w):
+    """(예전 판 호환 — edufine_결재선만들기.py 가 쓴다) UIA 로 «나의결재선» 콤보와 지금 값."""
+    cb = [c for c in w.descendants(control_type="ComboBox") if c.element_info.automation_id == "streReportCours"]
+    if not cb:
+        raise Stop("나의결재선 칸을 못 찾았습니다")
+    return cb[0], (cb[0].legacy_properties().get("Value") or "")
+
+
 def preset_names(h):
     return Q.js(doc(h), "var s=document.getElementById('streReportCours'); var o=[]; for(var i=0;i<s.options.length;i++)o.push(s.options[i].text); return o.join('|');").split("|")
 

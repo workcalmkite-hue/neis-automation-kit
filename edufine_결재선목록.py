@@ -3,8 +3,9 @@
 
   .\\.venv\\Scripts\\python.exe -X utf8 edufine_결재선목록.py
 
-하는 일: 문서관리 > 기안 > 공용서식으로 빈 기안 창을 하나 연다 → «나의결재선» 을 ↓ 로 한 칸씩 넘기며
-         결재선 이름과 그때 바뀌는 결재경로(직위·처리자)를 읽는다 → 기안 창을 «저장하지 않고» 닫는다.
+하는 일: 문서관리 > 기안 > 공용서식으로 빈 기안 창을 하나 연다 → «나의결재선» 목록을 기안 창 문서에서 바로 읽고
+         하나씩 골라 그때 바뀌는 결재경로(직위)를 읽는다 → 기안 창을 «저장하지 않고» 닫는다.
+★ 2026-11-12부터 진짜 마우스·키보드를 쓰지 않는다 (edufine_quiet.py). 기안 창은 작업표시줄에 내려 둔 채로 읽는다.
 ★ 아무것도 저장·상신하지 않는다. 제목·본문도 비워 둔 채 닫는다.
 ★ 모르는 창·문구가 뜨면 누르지 않고 멈춘다.
 결과: 이 폴더 «나의결재선.json» + 마지막 줄 RESULT_JSON=
@@ -17,8 +18,8 @@ from pathlib import Path
 
 import edufine_common as E
 import edufine_gian as G
-from edufine_gian import Stop, keyboard, mouse, win32con, win32gui
-from pywinauto import Desktop
+from edufine_gian import Stop, win32con, win32gui
+import edufine_quiet as Q
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "나의결재선.json"
@@ -76,12 +77,12 @@ def clear_autosave(wait):
         for m in G.windows("#32770", G.MSG_TITLE, G.wxs_pids()):
             t = G.msg_text(m)
             if "열려있는 기안" in t:          # 지난번에 덜 닫힌 기안기가 남아 있으면 묻는다 → [확인] 으로 그걸 닫는다 (2026-10-14)
-                G.press_msg(m, "확인")
+                Q.press(m, "확인")
                 time.sleep(2.0)
                 continue
             if "자동저장문서" not in t:
                 raise Stop("기안 창이 모르는 것을 묻습니다: %s" % t[:150])
-            G.press_msg(m, "취소")
+            Q.press(m, "취소")
             time.sleep(1.5)
             return
         time.sleep(0.5)
@@ -99,7 +100,7 @@ def handle_absent():
         msgs = [m for m in G.windows("#32770", G.MSG_TITLE, G.wxs_pids()) if "부재" in G.msg_text(m)]
         for m in msgs:
             notes.append(G.msg_text(m)[:120])
-            G.press_msg(m, "확인")
+            Q.press(m, "확인")
         for d in G.windows(G.IE_DLG, "결재경로설정", G.wxs_pids()):
             win32gui.PostMessage(d, win32con.WM_CLOSE, 0, 0)
             time.sleep(1.0)
@@ -108,49 +109,19 @@ def handle_absent():
     return notes
 
 
-def refocus_preset(h):
-    cb, _ = G.preset_value(G.gian_window(h))
-    r = cb.rectangle()
-    G.focus(h)
-    mouse.click(coords=(r.left + 30, (r.top + r.bottom) // 2))
-    time.sleep(0.5)
-    keyboard.send_keys("{ESC}")
-    time.sleep(0.3)
-
-
 def read_presets(h):
-    cb, cur = G.preset_value(G.gian_window(h))
-    r = cb.rectangle()
-    mouse.click(coords=(r.left + 30, (r.top + r.bottom) // 2))      # 열리면서 포커스
-    time.sleep(0.5)
-    keyboard.send_keys("{ESC}")                                     # 목록은 그림이라 못 읽는다 — 닫고 ↓ 로 넘긴다
-    time.sleep(0.3)
-    keyboard.send_keys("{HOME}")
-    time.sleep(2.0)
-    found, last, same = [], None, 0
-    for _ in range(40):
-        _, cur = G.preset_value(G.gian_window(h))
-        if cur == last:
-            same += 1                                               # ↓ 가 가끔 안 먹는다 — 세 번 같아야 맨 아래
-            if same >= 3:
-                break
-        else:
-            same = 0
-            last = cur
-            if cur.strip() and cur.strip() != "[현재 결재선]":     # «[현재 결재선]» 은 빈 기본값
-                time.sleep(1.5)                                     # 결재경로 표가 다시 그려질 시간
-                absent = handle_absent()
-                if absent:
-                    refocus_preset(h)                               # 알림·창을 닫았으니 ↓ 가 다시 나의결재선에 먹게
-                rows = G.route_rows(h)
-                found.append({"이름": cur.strip(),
-                              "결재경로": [" ".join(x[:4]) for x in rows],
-                              "부재중": absent})
-                E.log("  · %s%s" % (cur.strip(), "   ⚠️ 부재중인 결재자 있음" if absent else ""))
-                for x in rows:
-                    E.log("      %s" % " | ".join(x[:4]))
-        keyboard.send_keys("{DOWN}")
-        time.sleep(0.8)
+    d = Q.ready(h)
+    names = [n for n in G.preset_names(h) if n.strip() and n.strip() != "[현재 결재선]"]   # «[현재 결재선]» 은 빈 기본값
+    found = []
+    for name in names:
+        Q.set_preset(d, name)
+        time.sleep(1.5)                                             # 결재경로가 다시 채워질 시간
+        absent = handle_absent()
+        rows = G.route_rows(h)
+        found.append({"이름": name.strip(), "결재경로": [" ".join(x[:4]) for x in rows], "부재중": absent})
+        E.log("  · %s%s" % (name.strip(), "   ⚠️ 부재중인 결재자 있음" if absent else ""))
+        for x in rows:
+            E.log("      %s" % " | ".join(x[:4]))
     return found
 
 
@@ -172,9 +143,9 @@ def close_without_save(h):
                     if b == "예" and "저장" in t:
                         continue
                     try:
-                        G.press_msg(m, b)
+                        Q.press(m, b)
                         break
-                    except Exception:
+                    except (Exception, SystemExit):                   # 그 이름의 단추가 없으면 다음 이름
                         continue
                 before.add(m)
             else:
@@ -184,21 +155,19 @@ def close_without_save(h):
 
 
 def main():
+    prev = win32gui.GetForegroundWindow()           # 선생님이 쓰던 창 — 기안 창이 앞창을 가져가면 돌려준다
     open_form()
     clear_autosave(10)                   # 지난 기안기·자동저장본 물음부터 정리 — 그래야 창이 하나로 남는다
     hs = form_hwnds()
     if len(hs) != 1:
         raise Stop("기안 창이 %d개입니다 — 하나만 남기고 다시 돌려 주세요" % len(hs))
     h = hs[0]
-    win32gui.ShowWindow(h, win32con.SW_MAXIMIZE)
-    for _ in range(60):
-        if any(c.element_info.automation_id == "streReportCours"
-               for c in G.gian_window(h).descendants(control_type="ComboBox")):
-            break
-        time.sleep(0.5)
+    Q.sink(h)                            # 맨 뒤로 (활성화 X) — 문서가 준비되면 작업표시줄로
+    Q.ready(h)
+    Q.tuck(h)
     clear_autosave(3)
-    G.focus(h)
-    E.log("📋 나의결재선 읽는 중 (저장·상신하지 않습니다)")
+    Q.give_back(prev)
+    E.log("📋 나의결재선 읽는 중 (저장·상신하지 않습니다 · 마우스·키보드는 그대로 쓰셔도 됩니다)")
     found = read_presets(h)
     handle_absent()                      # 남은 결재경로설정 창이 있으면 먼저 닫는다 — 기안 창만 닫고 이게 남았었다 (10/14)
     closed = close_without_save(h)
