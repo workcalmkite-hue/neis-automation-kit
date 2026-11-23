@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """나이스 복무(근무상황) 자동 상신 스크립트.
 
-조퇴/외출/지각(연가)과 병조퇴/병외출/병지각(병가, 질병)을 개인근무상황관리 화면에서
+조퇴/외출/지각(연가)과 병조퇴/병외출/병지각(병가, 질병), 육아시간(특별휴가)을 개인근무상황관리 화면에서
 자동으로 신청하고 승인요청(상신)까지 완료한다.
 로그인은 main.py의 인증서 자동 로그인 로직을 그대로 재사용한다.
 
@@ -9,6 +9,7 @@
     python main_bokmu.py --type 조퇴 --date 2026-07-10 --start 15:00 --end 16:20 --reason "개인 사유"
     python main_bokmu.py --type 외출 --date 2026-07-10 --start 10:00 --end 11:00 --reason "은행 업무" --dry-run
     python main_bokmu.py --type 병조퇴 --date 2026-09-21 --start 15:50 --end 16:20 --reason "감기(OO내과 진료)"
+    python main_bokmu.py --type 육아시간 --date 2026-11-24 --start 14:20 --end 16:20 --reason "자녀 돌봄" --child 홍길동
 """
 import argparse
 import os
@@ -28,7 +29,12 @@ import main as neis  # 로그인/알림팝업 로직 재사용
 SITTN_PARENT = {
     "지각": "연가", "조퇴": "연가", "외출": "연가",
     "병지각": "병가", "병조퇴": "병가", "병외출": "병가",
+    # 특별휴가 › 육아시간 (2026-11-23 추가 — 연수 선생님 요청).
+    # 이 소분류를 고르면 폼 아래에 «자녀명» 콤보와 «만8세초과,초등학교2학년이하» 체크가 생긴다.
+    # 자녀명 목록은 나이스 인사기록의 자녀에서 온다 — 등록된 자녀가 없으면 «선택» 하나뿐이다 (실측).
+    "육아시간": "특별휴가",
 }
+CHILD_TYPES = {"육아시간"}
 WORK_SITTN_TYPES = set(SITTN_PARENT)
 CLOSE_CONFIRM_TEXT = "윈도우창을 닫으시겠습니까?"
 MINUTE_STEP = 5  # 시작/종료 '분' 콤보박스는 5분 단위로만 선택 가능
@@ -192,6 +198,8 @@ async def fill_work_sittn_form(
     end_hm: str,
     reason: str,
     contact: str | None,
+    child: str | None = None,
+    over8: bool = False,
 ):
     date_str = d.strftime("%Y-%m-%d")
     start_hm = round_to_step(start_hm)
@@ -233,6 +241,42 @@ async def fill_work_sittn_form(
     # 5) 사유 또는 용무 (연가사유 드롭다운은 기본값 '선택' 그대로 둠 — 경조사 등 특수 법정사유 전용)
     reason_input = dialog.locator('input[aria-label="사유 또는 용무"]').first
     await fill_text_input(page, reason_input, reason)
+
+    # 6) 육아시간 — 대상 자녀 (+ 만 8세가 넘었지만 초2 이하인 자녀면 체크)
+    if sittn_type in CHILD_TYPES:
+        await select_child(page, dialog, child)
+        if over8:
+            box = dialog.locator('[role="checkbox"][aria-label="만8세초과,초등학교2학년이하"]').first
+            if (await box.get_attribute("aria-checked")) != "true":
+                await click(page, box, timeout=5000)
+
+
+async def select_child(page: Page, dialog, child: str | None):
+    """«자녀명» 콤보에서 자녀를 고른다. 이름을 안 줬으면 자녀가 한 명일 때만 그 아이를 고른다."""
+    combo = dialog.locator('[role="combobox"][aria-label^="자녀명"]').first
+    await combo.wait_for(state="visible", timeout=10_000)
+    await combo.scroll_into_view_if_needed()
+    await click(page, combo, timeout=5000, force=True)
+    popup = page.locator('.cl-combobox-list[role="listbox"]').last
+    await popup.wait_for(state="visible", timeout=5000)
+    names = [t.strip() for t in await popup.locator('.cl-combobox-item[role="option"]').all_inner_texts()]
+    names = [t for t in names if t and t != "선택"]
+    await page.keyboard.press("Tab")          # 목록만 닫는다 (Escape 는 «창을 닫으시겠습니까?»를 부른다)
+    await page.wait_for_timeout(400)
+    if not names:
+        raise RuntimeError("육아시간 «자녀명» 목록이 비어 있습니다 — 나이스에 자녀 정보가 없으면 이렇게 됩니다. "
+                           "나이스에서 직접 신청할 때도 자녀를 못 고르면, 학교 인사(교무) 담당께 자녀 등록을 부탁해 주세요.")
+    if child:
+        hit = [n for n in names if n == child] or [n for n in names if child in n]
+        if not hit:
+            raise RuntimeError("자녀명 «%s» 이(가) 목록에 없습니다. 목록: %s" % (child, ", ".join(names)))
+        pick = hit[0]
+    elif len(names) == 1:
+        pick = names[0]
+    else:
+        raise RuntimeError("자녀가 여러 명입니다 — 누구 육아시간인지 --child 로 알려 주세요. 목록: %s" % ", ".join(names))
+    await select_combo_option(page, combo, pick)
+    print(f"✅  대상 자녀: {pick}")
 
 
 # '상신' 뒤에 떠도 되는 팝업. 이 문구가 없는 팝업은 누르지 않는다.
@@ -568,6 +612,8 @@ async def run(args):
                 end_hm=args.end,
                 reason=args.reason,
                 contact=contact,
+                child=args.child,
+                over8=args.over8,
             )
             print(f"✅  폼 입력 완료: {args.type} {d} {args.start}~{args.end} 사유='{args.reason}'")
 
@@ -616,7 +662,9 @@ async def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description="나이스 복무(근무상황) 자동 상신")
-    parser.add_argument("--type", required=True, choices=sorted(WORK_SITTN_TYPES), help="조퇴·외출·지각(연가) / 병조퇴·병외출·병지각(병가, 질병)")
+    parser.add_argument("--type", required=True, choices=sorted(WORK_SITTN_TYPES), help="조퇴·외출·지각(연가) / 병조퇴·병외출·병지각(병가, 질병) / 육아시간(특별휴가)")
+    parser.add_argument("--child", default=None, help="육아시간 대상 자녀 이름 (자녀가 한 명이면 생략 가능)")
+    parser.add_argument("--over8", action="store_true", help="육아시간: 만 8세 초과·초등학교 2학년 이하 자녀면 체크")
     parser.add_argument("--date", required=True, help="YYYY-MM-DD")
     parser.add_argument("--start", required=True, help="시작 시각 HH:MM")
     parser.add_argument("--end", required=True, help="종료 시각 HH:MM")

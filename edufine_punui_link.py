@@ -44,7 +44,7 @@ PLANS = teacher_config.CONFIG_DIR / "punui_link"
 MAX_AGE_MIN = 15
 SCOPE_ARGS = {"화면 채우기만": [], "저장까지": ["--저장"], "결재올림까지": ["--저장", "--결재요청"]}
 BOKMU_SCOPE = {"입력만": ["--dry-run"], "상신까지": []}
-BOKMU_TYPES = ("지각", "조퇴", "외출", "병지각", "병조퇴", "병외출")
+BOKMU_TYPES = ("지각", "조퇴", "외출", "병지각", "병조퇴", "병외출", "육아시간")
 BOKMU_MAX = 5
 
 
@@ -373,6 +373,8 @@ def bokmu_rows(data: dict) -> list:
             continue
         cmd = [venv_python(), "-X", "utf8", str(HERE / "main_bokmu.py"), "--type", r["종류"], "--date", r["날짜"],
                "--start", r["시작"], "--end", r["끝"], "--reason", r["사유"]] + BOKMU_SCOPE[data["범위"]]
+        if str(r.get("자녀", "")).strip():           # 육아시간 대상 자녀 (한 명이면 비워도 된다)
+            cmd += ["--child", str(r["자녀"]).strip()]
         if str(r.get("결재선", "")).strip():         # 그 줄만 다른 개인결재선 (비우면 설정의 approval_line)
             cmd += ["--approval-line", str(r["결재선"]).strip()]
         print("\n▶️  %s %s %s~%s" % (r["종류"], r["날짜"], r["시작"], r["끝"]), flush=True)

@@ -5,7 +5,7 @@
 
   [나이스] [에듀파인] [문서등록대장] [공람] [검수] [복무]  — 앞의 넷은 누르면 인증서 자동 로그인까지 해서 그 화면을 맨 앞에 띄운다.
   [검수]: 밀린 검사검수 건을 조회해 목록을 보여 주고, [등록하기]를 눌러야 등록한다 (edufine_inspect.py --go).
-  [복무]: 작은 창에서 종류(조퇴·외출·지각·병조퇴·병외출·병지각)·날짜·시각·사유를 고르고 [상신]을 누르면 나이스에 승인요청까지 올린다
+  [복무]: 작은 창에서 종류(조퇴·외출·지각·병조퇴·병외출·병지각·육아시간)·날짜·시각·사유를 고르고 [상신]을 누르면 나이스에 승인요청까지 올린다
           (main_bokmu.py). 종료 시각 기본값은 설정의 «퇴근 시각»(학교마다 다르다 — 처음 설정에서 묻는다).
   위젯이 뜰 때 두 크롬을 «최소화된 채로» 미리 로그인해 두고 5분마다 세션을 살려 두므로, 클릭은 보통 1~2초.
   오른쪽 클릭: 인증서 설정 · 미리 열어두기 켜고 끄기 · 크롬 창 닫기 · 위젯 끄기.  끌어서 옮길 수 있다.
@@ -48,7 +48,7 @@ BTNS = [("나이스", "neis", "open", "#1b6fb5"), ("에듀파인", "edufine", "m
         ("검수", "inspect", "check", "#d63a30"), ("복무", "bokmu", "form", "#c2417a")]
 INSPECT = HERE.parent / "edufine_inspect.py"      # 키트의 물품 검사검수 (조회만 / --go 등록)
 BOKMU = HERE.parent / "main_bokmu.py"             # 키트의 복무(근무상황) 상신
-BOKMU_TYPES = ["조퇴", "외출", "지각", "병조퇴", "병외출", "병지각"]
+BOKMU_TYPES = ["조퇴", "외출", "지각", "병조퇴", "병외출", "병지각", "육아시간"]
 MUTEX = "neis-edufine-widget"
 SHOW_EVENT, ACK_EVENT = "neis-edufine-widget-show", "neis-edufine-widget-shown"   # 바로가기를 또 누르면 «앞으로 나와» / «나왔어»
 GUARD_EVERY = 5                 # tick(0.4초) 다섯 번마다 = 2초마다 «보이나·화면 안인가·맨 위인가» 확인
@@ -509,6 +509,7 @@ class Widget:
         v_reason = tk.StringVar(value="")
         v_contact = tk.StringVar(value=c.get("contact", ""))
         v_line = tk.StringVar(value=c.get("approval_line", ""))
+        v_child = tk.StringVar(value=c.get("child", ""))
         f = ("Malgun Gothic", 9)
 
         def row(r, label, var, width=12):
@@ -519,7 +520,7 @@ class Widget:
         tk.Label(g, text="종류", bg=BG, fg=INK, font=f).grid(row=0, column=0, sticky="w", pady=2)
         kinds = tk.Frame(g, bg=BG)
         kinds.grid(row=0, column=1, sticky="w", padx=(8, 0))
-        for i, k in enumerate(BOKMU_TYPES):      # 두 줄 × 셋 — 한 줄로 늘어놓으면 창 밖으로 나간다
+        for i, k in enumerate(BOKMU_TYPES):      # 한 줄에 셋 — 한 줄로 늘어놓으면 창 밖으로 나간다
             tk.Radiobutton(kinds, text=k, variable=kind, value=k, bg=BG, font=f, activebackground=BG, width=7, anchor="w").grid(row=i // 3, column=i % 3, sticky="w")
         # 날짜 — 치지 않고 단추를 눌러 달력에서 고른다
         tk.Label(g, text="날짜", bg=BG, fg=INK, font=f).grid(row=1, column=0, sticky="nw", pady=2)
@@ -546,14 +547,17 @@ class Widget:
         e_reason = row(4, "사유", v_reason, 30)
         row(5, "연락처", v_contact, 16)
         row(6, "결재선", v_line, 24)
-        hint = tk.Label(g, text="조퇴 종료 = 설정의 퇴근 시각 %s · 지각 시작 = 출근 시각 %s · 5분 단위\n결재선 = 나이스 «개인결재선»에 이름 붙여 저장해 둔 그 이름 (없으면 나이스에서 먼저 만들어 두세요)" % (end_default, c.get("work_start") or "08:40"),
+        row(7, "자녀", v_child, 12)
+        hint = tk.Label(g, text="조퇴 종료 = 설정의 퇴근 시각 %s · 지각 시작 = 출근 시각 %s · 5분 단위\n자녀 = 육아시간일 때만 적어요 (자녀가 한 명이면 비워 둬도 돼요)\n결재선 = 나이스 «개인결재선»에 이름 붙여 저장해 둔 그 이름 (없으면 나이스에서 먼저 만들어 두세요)" % (end_default, c.get("work_start") or "08:40"),
                         bg=BG, fg="#8a7a68", font=("Malgun Gothic", 8), justify="left", wraplength=420)
-        hint.grid(row=7, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        hint.grid(row=8, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         def on_kind(*_):
             k = kind.get()
             if k in ("조퇴", "병조퇴"):
                 v_start.set(round5(datetime.now().strftime("%H:%M"))); v_end.set(end_default)
+            elif k == "육아시간":                # 보통 퇴근 전 2시간 (하루 최대 2시간)
+                e = datetime.strptime(end_default, "%H:%M"); v_start.set((e - timedelta(hours=2)).strftime("%H:%M")); v_end.set(end_default)
             elif k in ("외출", "병외출"):
                 t = datetime.now(); v_start.set(round5(t.strftime("%H:%M"))); v_end.set(round5((t + timedelta(hours=1)).strftime("%H:%M")))
             else:
@@ -563,10 +567,10 @@ class Widget:
         btns = tk.Frame(fr, bg=BG)
         btns.pack(pady=(0, 10))
         tk.Button(btns, text="상신", font=("Malgun Gothic", 9, "bold"), bg="#c2417a", fg="white", relief="flat", padx=12,
-                  command=lambda: self.bokmu_submit(tip, kind.get(), v_date.get().strip(), v_start.get().strip(), v_end.get().strip(), v_reason.get().strip(), v_contact.get().strip(), v_line.get().strip())).pack(side="left", padx=4)
+                  command=lambda: self.bokmu_submit(tip, kind.get(), v_date.get().strip(), v_start.get().strip(), v_end.get().strip(), v_reason.get().strip(), v_contact.get().strip(), v_line.get().strip(), v_child.get().strip())).pack(side="left", padx=4)
         tk.Button(btns, text="닫기", font=f, relief="flat", padx=10, command=tip.destroy).pack(side="left", padx=4)
 
-    def bokmu_submit(self, tip, kind, d, start, end, reason, contact, line):
+    def bokmu_submit(self, tip, kind, d, start, end, reason, contact, line, child=""):
         for hm in (start, end):
             if not re.fullmatch(r"\d{1,2}:\d{2}", hm):
                 self.say("시각은 15:30 처럼 적어 주세요", "#c0392b", 5000); return
@@ -581,14 +585,18 @@ class Widget:
         tip.destroy()
         self.busy = "복무 상신 중"
         c = cfg()
-        if c.get("contact") != contact or c.get("approval_line") != line:      # 다음부터 기본값으로
+        if c.get("contact") != contact or c.get("approval_line") != line or (child and c.get("child") != child):  # 다음부터 기본값으로
             try:
                 c["contact"], c["approval_line"] = contact, line
+                if child:
+                    c["child"] = child
                 CONFIG.write_text(json.dumps(c, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
                 pass
         args = [str(PY), "-X", "utf8", str(BOKMU), "--type", kind, "--date", d, "--start", round5(start), "--end", round5(end),
                 "--reason", reason, "--contact", contact, "--approval-line", line]
+        if kind == "육아시간" and child:
+            args += ["--child", child]
 
         def fn():
             t0 = time.time()
