@@ -73,6 +73,8 @@ def log(what, lines, t0):
         steps = " / ".join(ln[5:].split("  (")[0] for ln in lines if ln.startswith("STEP "))[:300]
         last = next((ln for ln in reversed(lines) if ln.startswith(("READY", "FAIL", "CLOSED"))), "(없음)")
         row = "%s  %s  %.1fs  %s  [%s]" % (datetime.now().strftime("%m-%d %H:%M:%S"), what, time.time() - t0, last[:100], steps)
+        # 지역마다 다른 인증서 창 — [진단] 줄(입력칸 이름표만, 값 없음)은 통째로 남겨 선생님이 복사해 보낼 수 있게
+        row += "".join("\n    " + ln.strip()[:600] for ln in lines if "[진단]" in ln)
         old = LOG.read_text(encoding="utf-8").splitlines()[-300:] if LOG.exists() else []
         BASE.mkdir(parents=True, exist_ok=True)
         LOG.write_text("\n".join(old + [row]) + "\n", encoding="utf-8")
