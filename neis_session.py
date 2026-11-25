@@ -69,7 +69,8 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # 인증서 창의 글자를 « | » 로 이어 붙여 가져온다 (암호칸에서 위로 올라가며 목록이 든 상자를 찾는다)
 JS_CERT_DIALOG = """() => {
-    let el = document.querySelector('input[aria-label="인증서 암호 입력필드"], input[title="인증서 암호 입력필드"]');
+    let el = document.querySelector('input[aria-label="인증서 암호 입력필드"], input[title="인증서 암호 입력필드"]')
+          || [...document.querySelectorAll('input[type=password]')].find(e => e.offsetParent !== null);
     for (let i = 0; el && i < 15; i++, el = el.parentElement) {
         const t = el.innerText || '';
         if (t.includes('발급자') && t.includes('인증서 보기')) return t.replace(/\\s*\\n\\s*/g, ' | ');
@@ -80,6 +81,50 @@ JS_CERT_DIALOG = """() => {
 
 class LoginBlocked(Exception):
     """사람이 고쳐야 넘어갈 수 있는 곳. 메시지에 고치는 법을 담는다."""
+
+
+# 보이는 입력칸의 «이름표»(종류·id·aria-label 등)만 모은다 — 값(value)은 절대 읽지 않는다. 암호칸을 못 찾았을 때 원인 보기용
+JS_INPUT_LABELS = """() => [...document.querySelectorAll('input')].filter(e => e.offsetParent !== null).map(e =>
+    [e.type, e.id, e.name, e.getAttribute('aria-label'), e.title, e.placeholder].filter(Boolean).join('/')).slice(0, 15)"""
+
+
+async def find_cert_pwd(page, timeout_s=20):
+    """인증서 창의 암호칸을 찾는다 → (frame, locator).
+    서울 나이스는 aria-label «인증서 암호 입력필드» 다. 지역에 따라 이름이 다르거나 iframe 안에 있을 수 있어
+    (2026-11-25 충북 선생님 제보 «암호 칸을 못 찾아 자동 로그인이 안 된다»),
+    못 찾으면 모든 프레임에서 «보이는 비밀번호 칸이 딱 하나» 인 곳을 쓴다. 둘 이상이면 고르지 않는다."""
+    for _ in range(timeout_s * 2):
+        for fr in page.frames:
+            try:
+                loc = fr.get_by_role("textbox", name="인증서 암호 입력필드")
+                if await loc.count() and await loc.first.is_visible():
+                    return fr, loc.first
+            except Exception:
+                pass
+        hits = []
+        for fr in page.frames:
+            try:
+                loc = fr.locator("input[type=password]:visible")
+                n = await loc.count()
+                hits += [(fr, loc.first)] * n
+            except Exception:
+                pass
+        if len(hits) == 1:
+            print("ℹ️  암호칸 이름이 서울과 달라 «보이는 비밀번호 칸» 으로 찾았습니다", flush=True)
+            return hits[0]
+        await page.wait_for_timeout(500)
+    seen = []
+    for fr in page.frames:
+        try:
+            seen += await fr.evaluate(JS_INPUT_LABELS)
+        except Exception:
+            pass
+    raise LoginBlocked(
+        "「인증서 로그인」을 눌렀는데 인증서 암호칸을 20초 안에 못 찾았습니다.\n"
+        "   화면에 «보안프로그램 설치»나 «로딩중»이 보이면, 평소 크롬으로 나이스에 한 번 로그인해\n"
+        "   보안프로그램을 설치한 뒤 다시 하세요.\n"
+        "   인증서 창은 떴는데 이 말이 나오면 아래 [진단] 줄을 복사해 만든 분께 보내 주세요 (암호·입력값은 안 들어 있습니다):\n"
+        f"   [진단] 주소={page.url.split('?')[0]} · 프레임 {len(page.frames)}개 · 보이는 입력칸={seen}")
 
 
 _SECRETS = []   # 화면에 찍기 전에 가릴 값 (인증서 암호). login() 이 채운다
@@ -321,25 +366,18 @@ async def auto_cert_login(page, name, pw, alerts):
             "   ③ 평소 크롬으로 나이스에 들어갔을 때 보안프로그램 설치 안내가 뜨는지 확인하세요")
     await btn.first.click()
 
-    pwd = page.get_by_role("textbox", name="인증서 암호 입력필드")
-    try:
-        await pwd.wait_for(timeout=20_000)
-    except Exception:
-        raise LoginBlocked(
-            "「인증서 로그인」을 눌렀는데 인증서 창이 20초 안에 안 떴습니다.\n"
-            "   화면에 «보안프로그램 설치»나 «로딩중»이 보이면, 평소 크롬으로 나이스에 한 번 로그인해\n"
-            "   보안프로그램을 설치한 뒤 다시 하세요.") from None
+    fr, pwd = await find_cert_pwd(page)
 
     # 인증서 목록은 창이 뜬 뒤에 채워진다 → 이름이 든 칸이 보일 때까지 기다린다
-    partial = page.locator(f"div[title*={json.dumps(name, ensure_ascii=False)}]:visible")
+    partial = fr.locator(f"div[title*={json.dumps(name, ensure_ascii=False)}]:visible")
     for _ in range(20):
         if await partial.count():
             break
         await page.wait_for_timeout(500)
-    rows = parse_cert_rows(await page.evaluate(JS_CERT_DIALOG))
+    rows = parse_cert_rows(await fr.evaluate(JS_CERT_DIALOG))
     hit = check_cert_choice(name, rows, await partial.count())
     # 목록에서 찾은 사용자 이름과 «똑같은» 칸만 누른다
-    target = page.locator(f"div[title={json.dumps(hit['user'], ensure_ascii=False)}]:visible")
+    target = fr.locator(f"div[title={json.dumps(hit['user'], ensure_ascii=False)}]:visible")
     if not await target.count():
         raise LoginBlocked(f"인증서 '{hit['user']}' 칸을 화면에서 찾지 못했습니다. 암호는 넣지 않았습니다.")
 

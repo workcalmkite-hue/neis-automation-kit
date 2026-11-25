@@ -338,6 +338,39 @@ def manual_login(page):
                      % MANUAL_WAIT_MIN)
 
 
+def find_cert_pwd(page, timeout_s=90):
+    """인증서 창의 암호칸 → (frame, locator). 못 찾으면 (None, None).
+    서울은 aria-label «인증서 암호 입력필드». 지역에 따라 이름이 다르거나 iframe 안일 수 있어
+    (2026-11-25 충북 제보) 못 찾으면 모든 프레임에서 «보이는 비밀번호 칸이 딱 하나» 인 곳을 쓴다."""
+    for _ in range(timeout_s * 2):
+        for fr in page.frames:
+            try:
+                loc = fr.get_by_role("textbox", name="인증서 암호 입력필드")
+                if loc.count() and loc.first.is_visible():
+                    return fr, loc.first
+            except Exception:
+                pass
+        hits = []
+        for fr in page.frames:
+            try:
+                loc = fr.locator("input[type=password]:visible")
+                hits += [(fr, loc.first)] * loc.count()
+            except Exception:
+                pass
+        if len(hits) == 1:
+            log("  암호칸 이름이 서울과 달라 «보이는 비밀번호 칸» 으로 찾았습니다")
+            return hits[0]
+        page.wait_for_timeout(500)
+    seen = []
+    for fr in page.frames:
+        try:
+            seen += fr.evaluate("() => [...document.querySelectorAll('input')].filter(e => e.offsetParent !== null).map(e => [e.type, e.id, e.name, e.getAttribute('aria-label'), e.title].filter(Boolean).join('/')).slice(0, 15)")
+        except Exception:
+            pass
+    log("  [진단] 인증서 암호칸 못 찾음 · 주소=%s · 프레임 %d개 · 보이는 입력칸=%s (암호·값 없음 — 만든 분께 보내 주세요)" % (page.url.split("?")[0], len(page.frames), seen))
+    return None, None
+
+
 def login(page, cert_name, cert_pw):
     log("🔐 업무포털 로그인 (지역: %s / %s)" % (REGION, PORTAL))
     for i in range(3):      # 첫 접속이 가끔 net::ERR_CERT_AUTHORITY_INVALID 로 튕긴다 — 바로 다시 하면 된다 (2026-10-06 실측)
@@ -384,10 +417,8 @@ def login(page, cert_name, cert_pw):
     wait_overlay_gone(page, timeout=60)
     robust_click(page, btn.last, "교육행정 전자서명 인증서 로그인")
     wait_overlay_gone(page, timeout=60, quiet=True)
-    pwd = page.get_by_role("textbox", name="인증서 암호 입력필드")
-    try:
-        pwd.wait_for(timeout=90000)
-    except Exception:
+    fr, pwd = find_cert_pwd(page, 90)
+    if pwd is None:
         try:    # 인증서 창이 안 뜬 가장 흔한 이유 — 이 PC 에 인증서 프로그램이 없다
             import neis_cert
             h = neis_cert.hint()
@@ -399,7 +430,7 @@ def login(page, cert_name, cert_pw):
 
     # ★ 인증서 줄을 먼저 «눌러서 고른» 다음 암호. 순서를 바꾸면 Enter 가 안 먹는다.
     for _ in range(30):
-        cells = page.get_by_role("gridcell").filter(has_text=cert_name)
+        cells = fr.get_by_role("gridcell").filter(has_text=cert_name)
         if cells.count():
             if cells.count() > 1:
                 log("  ⚠️ '%s' 가 든 인증서가 %d개입니다. 첫 번째를 고릅니다." % (cert_name, cells.count()))

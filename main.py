@@ -292,8 +292,8 @@ async def auto_login(page: Page, wait_ms: int = 8_000):
             pass  # 자동 선택된 경우 무시
 
         # 비밀번호 입력 후 Enter (버튼 클릭 대신)
-        pwd = page.get_by_role("textbox", name="인증서 암호 입력필드")
-        await pwd.wait_for(timeout=8000)
+        import neis_session   # 지역마다 암호칸 이름·iframe 이 달라도 찾는다 (2026-11-25 충북 제보)
+        _, pwd = await neis_session.find_cert_pwd(page, 8)
         await pwd.fill(CERT_PASSWORD)
         await pwd.press("Enter")
         print("🔐  비밀번호 입력 완료")
